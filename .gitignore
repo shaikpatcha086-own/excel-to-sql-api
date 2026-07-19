@@ -22,6 +22,8 @@ dist/
 # Local outputs
 generated_sql/
 generated_sql_api/
+*.xlsx
+*.xls
 
 # OS/editor
 .DS_Store
