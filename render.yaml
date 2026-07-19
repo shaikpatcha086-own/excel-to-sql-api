@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: excel-to-sql-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn sql_api:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
