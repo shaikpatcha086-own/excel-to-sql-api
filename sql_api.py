@@ -133,9 +133,116 @@ def download_sql(filename: str) -> FileResponse:
     return FileResponse(path=file_path, filename=safe_name, media_type="text/sql")
 
 
+@app.get("/excel-to-sql", response_class=HTMLResponse)
+def excel_to_sql_page(request: Request) -> HTMLResponse:
+    base_url = str(request.base_url).rstrip("/")
+    html = f"""
+    <!doctype html>
+    <html>
+        <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Excel to SQL</title>
+            <style>
+                body {{ font-family: Segoe UI, sans-serif; margin: 0; background: #f4f7fb; color: #1f2d3d; }}
+                .wrap {{ max-width: 900px; margin: 40px auto; padding: 0 20px 40px; }}
+                .top {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 20px; }}
+                .home {{ text-decoration: none; color: #0b5fff; font-weight: 600; }}
+                .panel {{ background: #fff; border-radius: 14px; padding: 22px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }}
+                .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }}
+                label {{ display: block; font-weight: 600; margin-bottom: 6px; }}
+                input {{ width: 100%; padding: 10px 12px; border: 1px solid #cfd8e3; border-radius: 8px; box-sizing: border-box; }}
+                button {{ margin-top: 14px; background: #0b5fff; color: white; border: 0; padding: 11px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; }}
+                .muted {{ color: #5b6b7b; font-size: 14px; }}
+                .result {{ margin-top: 18px; white-space: pre-wrap; background: #0b1220; color: #d7e7ff; padding: 14px; border-radius: 10px; min-height: 120px; }}
+                .download {{ display: inline-block; margin-top: 10px; text-decoration: none; background: #14a44d; color: #fff; padding: 10px 14px; border-radius: 8px; font-weight: 600; }}
+            </style>
+        </head>
+        <body>
+            <div class="wrap">
+                <div class="top">
+                    <div>
+                        <h1>Excel to SQL</h1>
+                        <div class="muted">Upload your mapping Excel and generate SQL instantly.</div>
+                    </div>
+                    <a class="home" href="{base_url}/">Back to hub</a>
+                </div>
+
+                <div class="panel">
+                    <form id="sqlForm">
+                        <div class="grid">
+                            <div>
+                                <label>Excel file</label>
+                                <input type="file" id="mapping_file" name="mapping_file" accept=".xlsx,.xls" required />
+                            </div>
+                            <div>
+                                <label>Sheet name (optional)</label>
+                                <input type="text" id="sheet_name" name="sheet_name" placeholder="Sheet2" />
+                            </div>
+                            <div>
+                                <label>Output SQL file name</label>
+                                <input type="text" id="output_name" name="output_name" value="generated_query.sql" />
+                            </div>
+                        </div>
+                        <button type="submit">Generate SQL</button>
+                    </form>
+
+                    <div style="margin-top:16px;">
+                        <div class="muted">Result</div>
+                        <div id="result" class="result">Upload a file and click Generate SQL.</div>
+                        <a id="downloadLink" class="download" href="#" style="display:none;">Download SQL</a>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+                const form = document.getElementById('sqlForm');
+                const result = document.getElementById('result');
+                const downloadLink = document.getElementById('downloadLink');
+
+                form.addEventListener('submit', async (event) => {{
+                    event.preventDefault();
+                    result.textContent = 'Generating SQL...';
+                    downloadLink.style.display = 'none';
+
+                    const fileInput = document.getElementById('mapping_file');
+                    const sheetName = document.getElementById('sheet_name').value;
+                    const outputName = document.getElementById('output_name').value;
+
+                    const formData = new FormData();
+                    formData.append('mapping_file', fileInput.files[0]);
+                    formData.append('sheet_name', sheetName);
+                    formData.append('output_name', outputName);
+
+                    try {{
+                        const response = await fetch('{base_url}/generate/upload', {{
+                            method: 'POST',
+                            body: formData
+                        }});
+                        const data = await response.json();
+
+                        if (!response.ok) {{
+                            throw new Error(data.detail || 'Failed to generate SQL');
+                        }}
+
+                        result.textContent = data.sql || 'SQL generated successfully.';
+                        downloadLink.href = data.download_url;
+                        downloadLink.textContent = 'Download SQL';
+                        downloadLink.style.display = 'inline-block';
+                    }} catch (error) {{
+                        result.textContent = 'Error: ' + error.message;
+                    }}
+                }});
+            </script>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    excel_sql_link = str(request.base_url).rstrip("/") + "/docs"
+    excel_sql_link = str(request.base_url).rstrip("/") + "/excel-to-sql"
     d365_link = D365_LINK.strip()
 
     d365_card = (
