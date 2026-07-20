@@ -63,22 +63,31 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s).strip().lower())
 
 
-def _choose_col(df: pd.DataFrame, candidates: list[str], required: bool = False) -> str | None:
+def _choose_col(
+    df: pd.DataFrame,
+    candidates: list[str],
+    required: bool = False,
+    allow_fuzzy: bool = True,
+) -> str | None:
     norm_to_real = {_norm(c): c for c in df.columns}
     for cand in candidates:
         if cand in norm_to_real:
             return norm_to_real[cand]
 
-    # Fuzzy fallback for slight header variations, e.g. extra suffix/prefix text.
-    fuzzy_matches: list[tuple[int, str]] = []
-    for real_norm, real_col in norm_to_real.items():
-        for cand in candidates:
-            if cand and (cand in real_norm or real_norm in cand):
-                fuzzy_matches.append((len(cand), real_col))
-                break
-    if fuzzy_matches:
-        fuzzy_matches.sort(reverse=True)
-        return fuzzy_matches[0][1]
+    if allow_fuzzy:
+        # Fuzzy fallback for slight header variations, e.g. extra suffix/prefix text.
+        # Ignore very short candidate tokens to avoid false positives like "on".
+        fuzzy_matches: list[tuple[int, str]] = []
+        for real_norm, real_col in norm_to_real.items():
+            for cand in candidates:
+                if not cand or len(cand) < 4:
+                    continue
+                if cand in real_norm or real_norm in cand:
+                    fuzzy_matches.append((len(cand), real_col))
+                    break
+        if fuzzy_matches:
+            fuzzy_matches.sort(reverse=True)
+            return fuzzy_matches[0][1]
 
     if required:
         raise ValueError(
@@ -278,20 +287,53 @@ def _build_join_clauses(df: pd.DataFrame, table_aliases: dict[str, str], base_ta
             "linklogic",
         ],
         required=False,
+        allow_fuzzy=False,
     )
+
+    source_table_col = _choose_col(df, ["sourcetable", "src_table", "table"], required=False)
+
+    def is_join_condition(expr: str) -> bool:
+        e = _clean(expr)
+        if not e:
+            return False
+        u = e.upper()
+        if u.startswith("CASE ") or " THEN " in u:
+            return False
+        if "=" not in e:
+            return False
+
+        refs = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\.", e)
+        if len(set(refs)) < 2:
+            return False
+        return True
 
     if join_col:
         raw_joins: list[str] = []
         for _, row in df.iterrows():
             join_expr = _clean(row.get(join_col, ""))
-            if join_expr:
-                raw_joins.append(_normalize_transform(join_expr, alias_map=table_aliases))
+            source_table = _clean(row.get(source_table_col, "")) if source_table_col else ""
+            clean_source_table = _clean_table_name(source_table)
+
+            if not join_expr or not clean_source_table:
+                continue
+            if _norm(clean_source_table) in STATIC_MARKERS or clean_source_table == base_table:
+                continue
+            if clean_source_table not in table_aliases:
+                continue
+            if not is_join_condition(join_expr):
+                continue
+
+            condition = _normalize_transform(join_expr, alias_map=table_aliases)
+            condition = re.sub(r"^\s*ON\s+", "", condition, flags=re.IGNORECASE)
+            join_line = f"LEFT JOIN {_bracket(clean_source_table)} {table_aliases[clean_source_table]} ON {condition}"
+            raw_joins.append(join_line)
+
         if raw_joins:
             unique_joins: list[str] = []
             for j in raw_joins:
                 if j not in unique_joins:
                     unique_joins.append(j)
-            return [f"LEFT JOIN /* explicit join */ {j}" if not j.strip().upper().startswith("LEFT JOIN") else j for j in unique_joins]
+            return unique_joins
 
     for tbl, alias in table_aliases.items():
         if tbl == base_table:
@@ -309,6 +351,10 @@ def _build_join_clauses(df: pd.DataFrame, table_aliases: dict[str, str], base_ta
         )
         if inferred:
             joins.append(f"LEFT JOIN {_bracket(clean_tbl)} {alias} ON {inferred}")
+        else:
+            joins.append(
+                f"LEFT JOIN {_bracket(clean_tbl)} {alias} ON 1=1 /* TODO: define join condition between {base_alias} and {alias} */"
+            )
 
     return joins
 
@@ -386,6 +432,31 @@ def _infer_join_condition(
     table_fields = _collect_table_fields(df, source_table_col, source_field_col)
     base_fields = table_fields.get(base_table, [])
     other_fields = table_fields.get(other_table, [])
+
+    other_norm = _norm(other_table)
+
+    # Heuristics for common mapping tables when key columns are not explicitly mapped.
+    if "ship" in other_norm or "shipto" in other_norm or "address" in other_norm:
+        base_key = next(
+            (
+                bf
+                for bf in base_fields
+                if any(x in _field_tokens(bf) for x in {"no", "id", "customer", "account"})
+            ),
+            "No_",
+        )
+        return f"{other_alias}.[Customer No_] = {base_alias}.{_bracket(base_key)}"
+
+    if "paymentterms" in other_norm or "terms" in other_norm:
+        base_key = next(
+            (
+                bf
+                for bf in base_fields
+                if any(x in _field_tokens(bf) for x in {"payment", "term", "code"})
+            ),
+            "Payment Terms Code",
+        )
+        return f"{other_alias}.[NAV_Code] = {base_alias}.{_bracket(base_key)}"
 
     if not base_fields or not other_fields:
         return None
@@ -508,7 +579,11 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
     table_frequency: dict[str, int] = {}
     for _, row in df.iterrows():
         tbl = _clean(row[source_table_col]) if source_table_col else ""
-        if tbl and not _is_static(tbl, tbl):
+        src = _clean(row[source_field_col])
+        tgt = _clean(row[target_field_col])
+        trn = _clean(row[transform_col]) if transform_col else ""
+        keep_row = bool(tgt) and ((not _is_no_map(src)) or bool(trn) or _is_static(tbl, src))
+        if tbl and keep_row and not _is_static(tbl, src):
             clean_tbl = _clean_table_name(tbl)
             table_frequency[clean_tbl] = table_frequency.get(clean_tbl, 0) + 1
     for tbl in table_frequency:
@@ -588,6 +663,23 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
 
     if not select_parts:
         raise ValueError("No mapped rows found after filtering rules were applied.")
+
+    if source_tables:
+        used_aliases = set()
+        for part in select_parts:
+            used_aliases.update(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\.", part))
+
+        filtered_tables: list[str] = []
+        for tbl in source_tables:
+            alias = alias_map.get(tbl, "")
+            if tbl == base_table or (alias and alias in used_aliases):
+                filtered_tables.append(tbl)
+
+        if filtered_tables:
+            source_tables = filtered_tables
+            if base_table not in source_tables:
+                base_table = source_tables[0]
+            ensure_table_aliases()
 
     if not source_tables:
         from_clause = "FROM /* TODO: add source table */"
