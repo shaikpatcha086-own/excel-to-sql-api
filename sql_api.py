@@ -8,7 +8,7 @@ import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
-from generate_sql_from_mapping import generate_sql
+from generate_sql_from_mapping import generate_sql, normalize_sql, review_sql
 
 
 app = FastAPI(
@@ -60,6 +60,16 @@ def _download_excel(file_url: str, destination: Path) -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/review-sql")
+def review_sql_endpoint(payload: dict[str, str]) -> dict[str, object]:
+    sql_text = payload.get("sql_text", "")
+    issues = review_sql(sql_text)
+    return {
+        "issues": issues,
+        "normalized_sql": normalize_sql(sql_text),
+    }
 
 
 @app.post("/generate/upload")
@@ -155,6 +165,10 @@ def excel_to_sql_page(request: Request) -> HTMLResponse:
                 button {{ margin-top: 14px; background: #0b5fff; color: white; border: 0; padding: 11px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; }}
                 .muted {{ color: #5b6b7b; font-size: 14px; }}
                 .result {{ margin-top: 18px; white-space: pre-wrap; background: #0b1220; color: #d7e7ff; padding: 14px; border-radius: 10px; min-height: 120px; }}
+                .review {{ margin-top: 14px; display: none; }}
+                .review textarea {{ width: 100%; min-height: 320px; border: 1px solid #cfd8e3; border-radius: 10px; padding: 12px; font-family: Consolas, monospace; box-sizing: border-box; }}
+                .pill {{ display: inline-block; padding: 6px 10px; border-radius: 999px; background: #eef3ff; color: #0b5fff; font-size: 12px; margin-bottom: 10px; }}
+                .warn {{ background: #fff4e5; color: #7a4b00; padding: 10px 12px; border-radius: 8px; margin: 8px 0; }}
                 .download {{ display: inline-block; margin-top: 10px; text-decoration: none; background: #14a44d; color: #fff; padding: 10px 14px; border-radius: 8px; font-weight: 600; }}
             </style>
         </head>
@@ -190,6 +204,16 @@ def excel_to_sql_page(request: Request) -> HTMLResponse:
                     <div style="margin-top:16px;">
                         <div class="muted">Result</div>
                         <div id="result" class="result">Upload a file and click Generate SQL.</div>
+                        <div id="reviewPanel" class="review">
+                            <div class="pill">Review layer before download</div>
+                            <div id="reviewIssues"></div>
+                            <div style="margin:10px 0 8px;" class="muted">Edit SQL if needed</div>
+                            <textarea id="sqlEditor"></textarea>
+                            <div>
+                                <button type="button" id="normalizeBtn">Normalize SQL</button>
+                                <button type="button" id="acceptBtn" style="background:#14a44d; margin-left:8px;">Approve for Download</button>
+                            </div>
+                        </div>
                         <a id="downloadLink" class="download" href="#" style="display:none;">Download SQL</a>
                     </div>
                 </div>
@@ -198,12 +222,29 @@ def excel_to_sql_page(request: Request) -> HTMLResponse:
             <script>
                 const form = document.getElementById('sqlForm');
                 const result = document.getElementById('result');
+                const reviewPanel = document.getElementById('reviewPanel');
+                const reviewIssues = document.getElementById('reviewIssues');
+                const sqlEditor = document.getElementById('sqlEditor');
+                const normalizeBtn = document.getElementById('normalizeBtn');
+                const acceptBtn = document.getElementById('acceptBtn');
                 const downloadLink = document.getElementById('downloadLink');
+                let latestSql = '';
+
+                function syncDownloadLink() {{
+                    const blob = new Blob([sqlEditor.value], {{ type: 'text/sql' }});
+                    const url = URL.createObjectURL(blob);
+                    downloadLink.href = url;
+                    downloadLink.download = document.getElementById('output_name').value || 'generated_query.sql';
+                    downloadLink.textContent = 'Download reviewed SQL';
+                    downloadLink.style.display = 'inline-block';
+                }}
 
                 form.addEventListener('submit', async (event) => {{
                     event.preventDefault();
                     result.textContent = 'Generating SQL...';
                     downloadLink.style.display = 'none';
+                    reviewPanel.style.display = 'none';
+                    reviewIssues.innerHTML = '';
 
                     const fileInput = document.getElementById('mapping_file');
                     const sheetName = document.getElementById('sheet_name').value;
@@ -225,13 +266,52 @@ def excel_to_sql_page(request: Request) -> HTMLResponse:
                             throw new Error(data.detail || 'Failed to generate SQL');
                         }}
 
-                        result.textContent = data.sql || 'SQL generated successfully.';
-                        downloadLink.href = data.download_url;
-                        downloadLink.textContent = 'Download SQL';
-                        downloadLink.style.display = 'inline-block';
+                        latestSql = data.sql || 'SQL generated successfully.';
+                        result.textContent = latestSql;
+                        sqlEditor.value = latestSql;
+                        reviewPanel.style.display = 'block';
+
+                        const reviewResponse = await fetch('{base_url}/review-sql', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ sql_text: latestSql }})
+                        }});
+                        const reviewData = await reviewResponse.json();
+                        reviewIssues.innerHTML = '';
+                        (reviewData.issues || []).forEach(issue => {{
+                            const div = document.createElement('div');
+                            div.className = 'warn';
+                            div.textContent = issue;
+                            reviewIssues.appendChild(div);
+                        }});
+
+                        syncDownloadLink();
                     }} catch (error) {{
                         result.textContent = 'Error: ' + error.message;
                     }}
+                }});
+
+                normalizeBtn.addEventListener('click', async () => {{
+                    const response = await fetch('{base_url}/review-sql', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ sql_text: sqlEditor.value }})
+                    }});
+                    const data = await response.json();
+                    sqlEditor.value = data.normalized_sql || sqlEditor.value;
+                    reviewIssues.innerHTML = '';
+                    (data.issues || []).forEach(issue => {{
+                        const div = document.createElement('div');
+                        div.className = 'warn';
+                        div.textContent = issue;
+                        reviewIssues.appendChild(div);
+                    }});
+                    syncDownloadLink();
+                }});
+
+                acceptBtn.addEventListener('click', () => {{
+                    syncDownloadLink();
+                    downloadLink.click();
                 }});
             </script>
         </body>

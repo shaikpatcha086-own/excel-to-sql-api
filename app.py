@@ -4,7 +4,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from generate_sql_from_mapping import generate_sql
+from generate_sql_from_mapping import generate_sql, normalize_sql, review_sql
 
 
 OUTPUT_DIR = Path("generated_sql")
@@ -59,13 +59,51 @@ def main() -> None:
                 st.error(f"Failed to build SQL from mapping: {exc}")
                 return
 
+        st.session_state["generated_sql"] = sql_text
+        st.session_state["reviewed_sql"] = sql_text
+        st.session_state["reviewed_sql_editor"] = sql_text
+        st.session_state["output_path"] = str(output_path)
+        st.session_state["output_name"] = safe_output_name
+
         st.success("SQL generated successfully.")
+
+    if "generated_sql" in st.session_state:
+        sql_text = st.session_state.get("generated_sql", "")
+        reviewed_sql = st.session_state.get("reviewed_sql", sql_text)
+        output_name = st.session_state.get("output_name", "generated_query.sql")
+        output_path = st.session_state.get("output_path", str(OUTPUT_DIR / output_name))
+
         st.write(f"Saved file: {output_path}")
-        st.code(sql_text, language="sql")
+
+        with st.expander("SQL Review Layer", expanded=True):
+            issues = review_sql(reviewed_sql)
+            if issues and issues != ["No obvious syntax issues detected."]:
+                for issue in issues:
+                    st.warning(issue)
+            else:
+                st.success("No obvious syntax issues detected.")
+
+            if st.button("Normalize SQL formatting"):
+                normalized_sql = normalize_sql(reviewed_sql)
+                st.session_state["reviewed_sql"] = normalized_sql
+                st.session_state["reviewed_sql_editor"] = normalized_sql
+                st.rerun()
+
+            edited_sql = st.text_area(
+                "Review and edit SQL before download",
+                value=reviewed_sql,
+                height=420,
+                key="reviewed_sql_editor",
+            )
+
+            st.session_state["reviewed_sql"] = edited_sql
+
+        Path(output_path).write_text(st.session_state["reviewed_sql"], encoding="utf-8")
+
         st.download_button(
-            label="Download SQL file",
-            data=sql_text,
-            file_name=safe_output_name,
+            label="Download reviewed SQL file",
+            data=st.session_state["reviewed_sql"],
+            file_name=output_name,
             mime="text/sql",
         )
 
