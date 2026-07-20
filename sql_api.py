@@ -19,7 +19,7 @@ app = FastAPI(
 
 OUTPUT_DIR = Path("generated_sql")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-D365_LINK = os.getenv("D365_METADATA_URL", "")
+ D365_LINK = os.getenv("D365_METADATA_URL", "https://d365-mapper-demo.onrender.com")
 
 
 def _sanitize_filename(name: str) -> str:
