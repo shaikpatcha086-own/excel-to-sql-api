@@ -1,11 +1,11 @@
+import os
 import re
 import tempfile
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
 from generate_sql_from_mapping import generate_sql
@@ -19,9 +19,7 @@ app = FastAPI(
 
 OUTPUT_DIR = Path("generated_sql")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-D365_LINK = os.getenv("D365_METADATA_URL", "http://localhost:9000/docs")
-EXCEL_SQL_LINK = os.getenv("EXCEL_SQL_URL", "http://localhost:8000/docs")
+D365_LINK = os.getenv("D365_METADATA_URL", "")
 
 
 def _sanitize_filename(name: str) -> str:
@@ -136,43 +134,52 @@ def download_sql(filename: str) -> FileResponse:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> HTMLResponse:
-        html = f"""
-        <!doctype html>
-        <html>
-            <head>
-                <meta charset=\"utf-8\" />
-                <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-                <title>Data Integration Hub</title>
-                <style>
-                    body {{ font-family: Segoe UI, sans-serif; margin: 0; background: #f4f7fb; }}
-                    .wrap {{ max-width: 840px; margin: 48px auto; padding: 0 20px; }}
-                    h1 {{ margin: 0 0 10px 0; }}
-                    p {{ color: #445; margin: 0 0 26px 0; }}
-                    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }}
-                    .card {{ background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }}
-                    .btn {{ display: inline-block; margin-top: 10px; text-decoration: none; background: #0b5fff; color: #fff; padding: 10px 14px; border-radius: 8px; font-weight: 600; }}
-                    .small {{ font-size: 13px; color: #566; }}
-                </style>
-            </head>
-            <body>
-                <div class=\"wrap\">
-                    <h1>Data Integration Hub</h1>
-                    <p>Use one URL and choose the project you need.</p>
-                    <div class=\"grid\">
-                        <div class=\"card\">
-                            <h3>D365 Metadata Mapping API</h3>
-                            <div class=\"small\">Open D365 metadata service documentation.</div>
-                            <a class=\"btn\" href=\"{D365_LINK}\" target=\"_blank\" rel=\"noopener\">Open D365 API</a>
-                        </div>
-                        <div class=\"card\">
-                            <h3>Excel to SQL Generator API</h3>
-                            <div class=\"small\">Upload mapping file and generate SQL.</div>
-                            <a class=\"btn\" href=\"{EXCEL_SQL_LINK}\" target=\"_blank\" rel=\"noopener\">Open Excel-SQL API</a>
-                        </div>
+def index(request: Request) -> HTMLResponse:
+    excel_sql_link = str(request.base_url).rstrip("/") + "/docs"
+    d365_link = D365_LINK.strip()
+
+    d365_card = (
+        f'<a class="btn" href="{d365_link}" target="_blank" rel="noopener">Open D365 API</a>'
+        if d365_link
+        else '<div class="small">Set D365_METADATA_URL in Render to link D365 docs.</div>'
+    )
+
+    html = f"""
+    <!doctype html>
+    <html>
+        <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Data Integration Hub</title>
+            <style>
+                body {{ font-family: Segoe UI, sans-serif; margin: 0; background: #f4f7fb; }}
+                .wrap {{ max-width: 840px; margin: 48px auto; padding: 0 20px; }}
+                h1 {{ margin: 0 0 10px 0; }}
+                p {{ color: #445; margin: 0 0 26px 0; }}
+                .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }}
+                .card {{ background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }}
+                .btn {{ display: inline-block; margin-top: 10px; text-decoration: none; background: #0b5fff; color: #fff; padding: 10px 14px; border-radius: 8px; font-weight: 600; }}
+                .small {{ font-size: 13px; color: #566; }}
+            </style>
+        </head>
+        <body>
+            <div class="wrap">
+                <h1>Data Integration Hub</h1>
+                <p>Use one URL and choose the project you need.</p>
+                <div class="grid">
+                    <div class="card">
+                        <h3>D365 Metadata Mapping API</h3>
+                        <div class="small">Open D365 metadata service documentation.</div>
+                        {d365_card}
+                    </div>
+                    <div class="card">
+                        <h3>Excel to SQL Generator API</h3>
+                        <div class="small">Upload mapping file and generate SQL.</div>
+                        <a class="btn" href="{excel_sql_link}" target="_blank" rel="noopener">Open Excel-SQL API</a>
                     </div>
                 </div>
-            </body>
-        </html>
-        """
-        return HTMLResponse(content=html)
+            </div>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
