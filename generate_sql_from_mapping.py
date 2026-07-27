@@ -242,47 +242,46 @@ def _is_no_map(source_field: str) -> bool:
     return _norm(source_field) in NO_MAP_MARKERS
 
 
-def _mapping_source_entity(mapping_source: str) -> str:
-    """Extract source entity/table name from Mapping Source text."""
+def _mapping_source_entity(mapping_source: str, source_field: str = "") -> str:
+    """Extract source entity/table name from Mapping Source text without hardcoded aliases."""
     value = _clean(mapping_source)
     if not value or _is_no_map(value):
         return ""
-
-    alias_to_table = {
-        "cust": "Company$Customer",
-        "ship": "Company$Ship-to Address",
-        "terms": "PaymentTerms_Mapping",
-        "country": "Country/Region",
-        "vend": "Vendor",
-        "item": "Item",
-        "ar": "AR",
-    }
-
     raw = value.strip()
-    token_match = re.match(r"^\s*(?:\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_$/-]*))(?:\s*\.|\s*$)", raw)
+    # Pattern: Entity.Column or [Entity].Column
+    token_match = re.match(r"^\s*(?:\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_$/\- ]*))\s*\.", raw)
     if token_match:
         token = (token_match.group(1) or token_match.group(2) or "").strip()
-        norm_token = _norm(token)
-        if norm_token in alias_to_table:
-            return alias_to_table[norm_token]
-        # Only treat raw token as table name if expression references a column
-        # via dot notation (e.g., Table.Field). Plain field tokens are ignored.
-        if "." in raw:
+        if token and _norm(token) != _norm(source_field):
             return token
+
+    # Pattern: standalone entity name in Mapping Source (e.g., Customer)
+    standalone = raw[1:-1].strip() if raw.startswith("[") and raw.endswith("]") else raw
+    if not standalone:
         return ""
 
-    if raw.lower() in alias_to_table:
-        return alias_to_table[raw.lower()]
+    if _norm(standalone) == _norm(source_field):
+        return ""
+
+    # Skip obvious SQL expressions and function-like text.
+    if re.search(r"\b(case|when|then|else|end|select|from|join|where|cast|convert)\b", standalone, re.IGNORECASE):
+        return ""
+    if re.search(r"[=+*/'()]", standalone):
+        return ""
+
+    # Accept text that looks like an entity token (letters/digits/_/$/- and spaces).
+    if re.fullmatch(r"[A-Za-z0-9_$/\- ]+", standalone):
+        return standalone.strip()
 
     return ""
 
 
-def _effective_source_table(source_table: str, mapping_source: str) -> str:
+def _effective_source_table(source_table: str, mapping_source: str, source_field: str = "") -> str:
     """Use Table as source table; if blank, infer from Mapping Source when not NoMap."""
     table_val = _clean(source_table)
     if table_val:
         return table_val
-    return _mapping_source_entity(mapping_source)
+    return _mapping_source_entity(mapping_source, source_field)
 
 
 def _split_table_col(source_field: str) -> tuple[str | None, str]:
@@ -528,6 +527,20 @@ def _build_join_clauses(df: pd.DataFrame, table_aliases: dict[str, str], base_ta
         ["mappingsource", "fieldmappingsource", "mapping_source"],
         allow_fuzzy=True,
     )
+    source_field_cols = _choose_cols(
+        df,
+        [
+            "sourcefield",
+            "source_column",
+            "srccolumn",
+            "source",
+            "sourcefieldbelowd365",
+            "d365sourcefield",
+            "fieldmappingsourcefield",
+            "field",
+        ],
+        allow_fuzzy=True,
+    )
 
     def is_join_condition(expr: str) -> bool:
         e = _clean(expr)
@@ -550,7 +563,8 @@ def _build_join_clauses(df: pd.DataFrame, table_aliases: dict[str, str], base_ta
             join_expr = _clean(row.get(join_col, ""))
             raw_source_table = _first_non_empty(row, source_table_cols)
             mapping_source_value = _first_non_empty(row, mapping_source_cols)
-            source_table = _effective_source_table(raw_source_table, mapping_source_value)
+            source_field = _first_non_empty(row, source_field_cols)
+            source_table = _effective_source_table(raw_source_table, mapping_source_value, source_field)
             clean_source_table = _clean_table_name(source_table)
 
             if not join_expr or not clean_source_table:
@@ -637,8 +651,8 @@ def _collect_table_fields(
     for _, row in df.iterrows():
         raw_tbl = _first_non_empty(row, table_cols)
         mapping_source_value = _first_non_empty(row, mapping_source_cols)
-        tbl = _effective_source_table(raw_tbl, mapping_source_value)
         src = _first_non_empty(row, source_cols)
+        tbl = _effective_source_table(raw_tbl, mapping_source_value, src)
         if not src or _is_no_map(src) or _is_static(tbl, src):
             continue
         clean_tbl = _clean_table_name(tbl)
@@ -877,7 +891,7 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         tgt = _clean(row[target_field_col])
         trn = _clean(row[transform_col]) if transform_col else ""
         mapping_source_value = _first_non_empty(row, mapping_source_cols)
-        tbl = _effective_source_table(raw_tbl, mapping_source_value)
+        tbl = _effective_source_table(raw_tbl, mapping_source_value, src)
         keep_row = bool(tgt) and (not _is_no_map(src))
         if tbl and keep_row and not _is_static(tbl, src):
             clean_tbl = _clean_table_name(tbl)
@@ -890,8 +904,8 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
     for _, row in df.iterrows():
         raw_source_table = _first_non_empty(row, source_table_cols)
         mapping_source_value = _first_non_empty(row, mapping_source_cols)
-        source_table = _effective_source_table(raw_source_table, mapping_source_value)
         source_field = _first_non_empty(row, source_field_cols)
+        source_table = _effective_source_table(raw_source_table, mapping_source_value, source_field)
         transform_logic = _clean(row[transform_col]) if transform_col else ""
         if source_table:
             add_table(source_table)
@@ -919,7 +933,7 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         source_field = _first_non_empty(row, source_field_cols)
         raw_source_table = _first_non_empty(row, source_table_cols)
         mapping_source_value = _first_non_empty(row, mapping_source_cols)
-        source_table = _effective_source_table(raw_source_table, mapping_source_value)
+        source_table = _effective_source_table(raw_source_table, mapping_source_value, source_field)
         target_field = _clean(row[target_field_col])
         transform_logic = _clean(row[transform_col]) if transform_col else ""
         static_value = _clean(row[static_col]) if static_col else ""
