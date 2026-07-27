@@ -142,9 +142,37 @@ def _is_blank(val) -> bool:
 
 
 def _clean(val) -> str:
+    # Pandas may return a Series when duplicate column names exist.
+    if isinstance(val, pd.Series):
+        for item in val.tolist():
+            cleaned = _clean(item)
+            if cleaned:
+                return cleaned
+        return ""
+    if isinstance(val, (list, tuple)):
+        for item in val:
+            cleaned = _clean(item)
+            if cleaned:
+                return cleaned
+        return ""
+
     if pd.isna(val):
         return ""
     return str(val).strip()
+
+
+def _unique_headers(headers: list[str]) -> list[str]:
+    """Make duplicate headers unique while preserving the first occurrence as-is."""
+    counts: dict[str, int] = {}
+    unique: list[str] = []
+    for h in headers:
+        key = h.strip() if isinstance(h, str) else str(h)
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] == 1:
+            unique.append(key)
+        else:
+            unique.append(f"{key}__{counts[key]}")
+    return unique
 
 
 def _is_static(source_table: str, source_field: str) -> bool:
@@ -395,11 +423,13 @@ def _read_mapping_df(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     raw_df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
     header_idx = _detect_header_row(raw_df)
     if header_idx is None:
-        return pd.read_excel(xls, sheet_name=sheet_name)
+        data_df = pd.read_excel(xls, sheet_name=sheet_name)
+        data_df.columns = _unique_headers([str(c) for c in data_df.columns])
+        return data_df
 
     header_vals = [_as_typed_header(v, i) for i, v in enumerate(raw_df.iloc[header_idx].tolist())]
     data_df = raw_df.iloc[header_idx + 1 :].copy()
-    data_df.columns = header_vals
+    data_df.columns = _unique_headers(header_vals)
     data_df = data_df.dropna(how="all").reset_index(drop=True)
     return data_df
 
