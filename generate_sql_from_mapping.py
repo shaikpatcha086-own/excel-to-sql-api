@@ -783,7 +783,6 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         allow_fuzzy=True,
     )
     static_col = _choose_col(df, ["staticvalue", "defaultvalue", "constantvalue", "literalvalue"], required=False)
-    example_col = _choose_col(df, ["example", "sample", "default", "value"], required=False)
 
     select_parts: list[str] = []
     source_tables: list[str] = []
@@ -815,7 +814,7 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         trn = _clean(row[transform_col]) if transform_col else ""
         mapping_source_value = _first_non_empty(row, mapping_source_cols)
         tbl = _effective_source_table(raw_tbl, mapping_source_value)
-        keep_row = bool(tgt) and ((not _is_no_map(src)) or bool(trn) or _is_static(tbl, src))
+        keep_row = bool(tgt) and (not _is_no_map(src))
         if tbl and keep_row and not _is_static(tbl, src):
             clean_tbl = _clean_table_name(tbl)
             table_frequency[clean_tbl] = table_frequency.get(clean_tbl, 0) + 1
@@ -860,13 +859,12 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         target_field = _clean(row[target_field_col])
         transform_logic = _clean(row[transform_col]) if transform_col else ""
         static_value = _clean(row[static_col]) if static_col else ""
-        example_value = _clean(row[example_col]) if example_col else ""
 
         if not target_field:
             continue
 
-        # Keep rows where source_field is mapped OR explicit static/transformation row.
-        keep_row = (not _is_no_map(source_field)) or bool(transform_logic) or _is_static(source_table, source_field)
+        # Keep rows only when source field is mapped (source Field <> NoMap).
+        keep_row = not _is_no_map(source_field)
         if not keep_row:
             continue
 
@@ -878,8 +876,6 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         expr = ""
         if transform_logic:
             expr = _normalize_transform(transform_logic, alias_map)
-        elif example_value and _norm(source_field) == _norm(target_field):
-            expr = _sql_literal(example_value)
         elif _is_static(source_table, source_field):
             static_raw = static_value if static_value else source_field
             expr = _sql_literal(static_raw)
