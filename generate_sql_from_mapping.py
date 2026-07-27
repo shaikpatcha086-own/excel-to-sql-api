@@ -63,13 +63,24 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s).strip().lower())
 
 
+def _norm_header_key(s: str) -> str:
+    # Treat duplicate-suffixed headers like Field__2 as Field for matching.
+    base = re.sub(r"__\d+$", "", str(s).strip())
+    return _norm(base)
+
+
 def _choose_col(
     df: pd.DataFrame,
     candidates: list[str],
     required: bool = False,
     allow_fuzzy: bool = True,
 ) -> str | None:
-    norm_to_real = {_norm(c): c for c in df.columns}
+    norm_to_real: dict[str, str] = {}
+    for c in df.columns:
+        key = _norm_header_key(c)
+        # Keep the first occurrence to preserve left-to-right precedence.
+        if key not in norm_to_real:
+            norm_to_real[key] = c
     for cand in candidates:
         if cand in norm_to_real:
             return norm_to_real[cand]
@@ -100,7 +111,7 @@ def _choose_col(
 
 def _choose_cols(df: pd.DataFrame, candidates: list[str], allow_fuzzy: bool = True) -> list[str]:
     """Return all matching columns for candidate normalized names, in candidate priority order."""
-    norm_cols = [(_norm(c), c) for c in df.columns]
+    norm_cols = [(_norm_header_key(c), c) for c in df.columns]
     matches: list[str] = []
     seen: set[str] = set()
 
@@ -135,6 +146,52 @@ def _first_non_empty(row: pd.Series, cols: list[str]) -> str:
         if val:
             return val
     return ""
+
+
+def _column_index_map(df: pd.DataFrame) -> dict[str, int]:
+    return {str(col): idx for idx, col in enumerate(df.columns)}
+
+
+def _prioritize_source_field_cols(
+    df: pd.DataFrame,
+    source_field_cols: list[str],
+    source_table_cols: list[str],
+    mapping_source_cols: list[str],
+) -> list[str]:
+    """
+    Prefer explicit source-field headers first.
+    For generic 'Field' duplicates, prioritize the one nearest source side
+    columns (Table / Mapping Source).
+    """
+    if not source_field_cols:
+        return source_field_cols
+
+    explicit: list[str] = []
+    generic: list[str] = []
+    for col in source_field_cols:
+        key = _norm_header_key(col)
+        if key == "field":
+            generic.append(col)
+        else:
+            explicit.append(col)
+
+    if len(generic) <= 1:
+        return explicit + generic
+
+    idx_map = _column_index_map(df)
+    anchor_cols = [c for c in (source_table_cols + mapping_source_cols) if c in idx_map]
+    if not anchor_cols:
+        return explicit + generic
+
+    anchor_idx = [idx_map[c] for c in anchor_cols]
+
+    def distance(col: str) -> tuple[int, int]:
+        ci = idx_map.get(col, 10**9)
+        d = min(abs(ci - ai) for ai in anchor_idx)
+        return (d, ci)
+
+    generic_sorted = sorted(generic, key=distance)
+    return explicit + generic_sorted
 
 
 def _is_blank(val) -> bool:
@@ -208,7 +265,11 @@ def _mapping_source_entity(mapping_source: str) -> str:
         norm_token = _norm(token)
         if norm_token in alias_to_table:
             return alias_to_table[norm_token]
-        return token
+        # Only treat raw token as table name if expression references a column
+        # via dot notation (e.g., Table.Field). Plain field tokens are ignored.
+        if "." in raw:
+            return token
+        return ""
 
     if raw.lower() in alias_to_table:
         return alias_to_table[raw.lower()]
@@ -641,6 +702,8 @@ def _infer_join_condition(
             f"Available columns: {list(df.columns)}"
         )
 
+    source_field_cols = _prioritize_source_field_cols(df, source_field_cols, source_table_cols, mapping_source_cols)
+
     table_fields = _collect_table_fields(df, source_table_cols, source_field_cols, mapping_source_cols)
     base_fields = table_fields.get(base_table, [])
     other_fields = table_fields.get(other_table, [])
@@ -782,6 +845,7 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         ["mappingsource", "fieldmappingsource", "mapping_source"],
         allow_fuzzy=True,
     )
+    source_field_cols = _prioritize_source_field_cols(df, source_field_cols, source_table_cols, mapping_source_cols)
     static_col = _choose_col(df, ["staticvalue", "defaultvalue", "constantvalue", "literalvalue"], required=False)
 
     select_parts: list[str] = []
