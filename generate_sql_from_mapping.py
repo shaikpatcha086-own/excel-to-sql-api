@@ -118,6 +118,45 @@ def _is_no_map(source_field: str) -> bool:
     return _norm(source_field) in NO_MAP_MARKERS
 
 
+def _mapping_source_entity(mapping_source: str) -> str:
+    """Extract source entity/table name from Mapping Source text."""
+    value = _clean(mapping_source)
+    if not value or _is_no_map(value):
+        return ""
+
+    alias_to_table = {
+        "cust": "Company$Customer",
+        "ship": "Company$Ship-to Address",
+        "terms": "PaymentTerms_Mapping",
+        "country": "Country/Region",
+        "vend": "Vendor",
+        "item": "Item",
+        "ar": "AR",
+    }
+
+    raw = value.strip()
+    token_match = re.match(r"^\s*(?:\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_$/-]*))(?:\s*\.|\s*$)", raw)
+    if token_match:
+        token = (token_match.group(1) or token_match.group(2) or "").strip()
+        norm_token = _norm(token)
+        if norm_token in alias_to_table:
+            return alias_to_table[norm_token]
+        return token
+
+    if raw.lower() in alias_to_table:
+        return alias_to_table[raw.lower()]
+
+    return ""
+
+
+def _effective_source_table(source_table: str, mapping_source: str) -> str:
+    """Use Table as source table; if blank, infer from Mapping Source when not NoMap."""
+    table_val = _clean(source_table)
+    if table_val:
+        return table_val
+    return _mapping_source_entity(mapping_source)
+
+
 def _split_table_col(source_field: str) -> tuple[str | None, str]:
     sf = _clean(source_field)
     if "." in sf:
@@ -240,7 +279,15 @@ def _detect_header_row(raw_df: pd.DataFrame) -> int | None:
         "fieldname",
         "name",
     }
-    source_markers = {"sourcefield", "source", "sourcecolumn", "sourcefieldname"}
+    source_markers = {
+        "sourcefield",
+        "source",
+        "sourcecolumn",
+        "sourcefieldname",
+        "fieldmappingsourcefield",
+        "mappingsource",
+        "field",
+    }
     for i, row in raw_df.head(60).iterrows():
         values = {_norm(v) for v in row.tolist() if not _is_blank(v)}
         if any(marker in values for marker in source_markers) and any(marker in values for marker in target_markers):
@@ -290,7 +337,16 @@ def _build_join_clauses(df: pd.DataFrame, table_aliases: dict[str, str], base_ta
         allow_fuzzy=False,
     )
 
-    source_table_col = _choose_col(df, ["sourcetable", "src_table", "table"], required=False)
+    source_table_col = _choose_col(
+        df,
+        ["sourcetable", "src_table", "fieldmappingsourcetable", "table"],
+        required=False,
+    )
+    mapping_source_col = _choose_col(
+        df,
+        ["mappingsource", "fieldmappingsource", "mapping_source"],
+        required=False,
+    )
 
     def is_join_condition(expr: str) -> bool:
         e = _clean(expr)
@@ -311,7 +367,9 @@ def _build_join_clauses(df: pd.DataFrame, table_aliases: dict[str, str], base_ta
         raw_joins: list[str] = []
         for _, row in df.iterrows():
             join_expr = _clean(row.get(join_col, ""))
-            source_table = _clean(row.get(source_table_col, "")) if source_table_col else ""
+            raw_source_table = _clean(row.get(source_table_col, "")) if source_table_col else ""
+            mapping_source_value = _clean(row.get(mapping_source_col, "")) if mapping_source_col else ""
+            source_table = _effective_source_table(raw_source_table, mapping_source_value)
             clean_source_table = _clean_table_name(source_table)
 
             if not join_expr or not clean_source_table:
@@ -388,14 +446,23 @@ def _field_score(field_name: str, table_tokens: set[str]) -> int:
     return score
 
 
-def _collect_table_fields(df: pd.DataFrame, table_col: str | None, source_col: str) -> dict[str, list[str]]:
+def _collect_table_fields(
+    df: pd.DataFrame,
+    table_col: str | None,
+    source_col: str,
+    mapping_source_col: str | None = None,
+) -> dict[str, list[str]]:
     table_fields: dict[str, list[str]] = {}
     for _, row in df.iterrows():
-        tbl = _clean(row[table_col]) if table_col else ""
+        raw_tbl = _clean(row[table_col]) if table_col else ""
+        mapping_source_value = _clean(row[mapping_source_col]) if mapping_source_col else ""
+        tbl = _effective_source_table(raw_tbl, mapping_source_value)
         src = _clean(row[source_col])
         if not src or _is_no_map(src) or _is_static(tbl, src):
             continue
         clean_tbl = _clean_table_name(tbl)
+        if not clean_tbl:
+            continue
         if clean_tbl not in table_fields:
             table_fields[clean_tbl] = []
         tbl_from_src, src_col = _split_table_col(src)
@@ -422,14 +489,32 @@ def _infer_join_condition(
     other_alias: str,
     df: pd.DataFrame,
 ) -> str | None:
-    source_table_col = _choose_col(df, ["sourcetable", "src_table", "table"], required=False)
+    source_table_col = _choose_col(
+        df,
+        ["sourcetable", "src_table", "fieldmappingsourcetable", "table"],
+        required=False,
+    )
+    mapping_source_col = _choose_col(
+        df,
+        ["mappingsource", "fieldmappingsource", "mapping_source"],
+        required=False,
+    )
     source_field_col = _choose_col(
         df,
-        ["sourcefield", "source_column", "srccolumn", "source", "sourcefieldbelowd365", "d365sourcefield"],
+        [
+            "sourcefield",
+            "source_column",
+            "srccolumn",
+            "source",
+            "sourcefieldbelowd365",
+            "d365sourcefield",
+            "fieldmappingsourcefield",
+            "field",
+        ],
         required=True,
     )
 
-    table_fields = _collect_table_fields(df, source_table_col, source_field_col)
+    table_fields = _collect_table_fields(df, source_table_col, source_field_col, mapping_source_col)
     base_fields = table_fields.get(base_table, [])
     other_fields = table_fields.get(other_table, [])
 
@@ -528,10 +613,16 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
             "source",
             "sourcefieldbelowd365",
             "d365sourcefield",
+            "fieldmappingsourcefield",
+            "field",
         ],
         required=True,
     )
-    source_table_col = _choose_col(df, ["sourcetable", "src_table", "table"], required=False)
+    source_table_col = _choose_col(
+        df,
+        ["sourcetable", "src_table", "fieldmappingsourcetable", "table"],
+        required=False,
+    )
     target_field_col = _choose_col(
         df,
         [
@@ -549,6 +640,11 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
     transform_col = _choose_col(
         df,
         ["transformationlogic", "transformlogic", "logic", "transformation", "rule", "expression"],
+        required=False,
+    )
+    mapping_source_col = _choose_col(
+        df,
+        ["mappingsource", "fieldmappingsource", "mapping_source"],
         required=False,
     )
     static_col = _choose_col(df, ["staticvalue", "defaultvalue", "constantvalue", "literalvalue"], required=False)
@@ -578,10 +674,12 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
 
     table_frequency: dict[str, int] = {}
     for _, row in df.iterrows():
-        tbl = _clean(row[source_table_col]) if source_table_col else ""
+        raw_tbl = _clean(row[source_table_col]) if source_table_col else ""
         src = _clean(row[source_field_col])
         tgt = _clean(row[target_field_col])
         trn = _clean(row[transform_col]) if transform_col else ""
+        mapping_source_value = _clean(row[mapping_source_col]) if mapping_source_col else ""
+        tbl = _effective_source_table(raw_tbl, mapping_source_value)
         keep_row = bool(tgt) and ((not _is_no_map(src)) or bool(trn) or _is_static(tbl, src))
         if tbl and keep_row and not _is_static(tbl, src):
             clean_tbl = _clean_table_name(tbl)
@@ -592,7 +690,9 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
     base_table = max(table_frequency.items(), key=lambda item: item[1])[0] if table_frequency else ""
 
     for _, row in df.iterrows():
-        source_table = _clean(row[source_table_col]) if source_table_col else ""
+        raw_source_table = _clean(row[source_table_col]) if source_table_col else ""
+        mapping_source_value = _clean(row[mapping_source_col]) if mapping_source_col else ""
+        source_table = _effective_source_table(raw_source_table, mapping_source_value)
         source_field = _clean(row[source_field_col])
         transform_logic = _clean(row[transform_col]) if transform_col else ""
         if source_table:
@@ -619,7 +719,9 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
 
     for _, row in df.iterrows():
         source_field = _clean(row[source_field_col])
-        source_table = _clean(row[source_table_col]) if source_table_col else ""
+        raw_source_table = _clean(row[source_table_col]) if source_table_col else ""
+        mapping_source_value = _clean(row[mapping_source_col]) if mapping_source_col else ""
+        source_table = _effective_source_table(raw_source_table, mapping_source_value)
         target_field = _clean(row[target_field_col])
         transform_logic = _clean(row[transform_col]) if transform_col else ""
         static_value = _clean(row[static_col]) if static_col else ""
