@@ -298,6 +298,42 @@ def _normalize_transform(expr: str, alias_map: dict[str, str]) -> str:
 
 
 def _preferred_sheet_name(xls: pd.ExcelFile) -> str:
+    # First prefer the sheet that looks like a mapping sheet by header content.
+    best_sheet: str | None = None
+    best_score = -1
+    best_header_idx = 10**9
+    score_markers = {
+        "sourcefield",
+        "fieldmappingsourcefield",
+        "sourcetable",
+        "fieldmappingsourcetable",
+        "mappingsource",
+        "targetfield",
+        "target",
+        "field",
+        "table",
+    }
+
+    for sheet_name in xls.sheet_names:
+        try:
+            raw_df = pd.read_excel(xls, sheet_name=sheet_name, header=None, nrows=500)
+        except Exception:
+            continue
+
+        header_idx = _detect_header_row(raw_df)
+        if header_idx is None:
+            continue
+
+        row_values = {_norm(v) for v in raw_df.iloc[header_idx].tolist() if not _is_blank(v)}
+        score = len(row_values & score_markers)
+        if score > best_score or (score == best_score and header_idx < best_header_idx):
+            best_sheet = sheet_name
+            best_score = score
+            best_header_idx = header_idx
+
+    if best_sheet:
+        return best_sheet
+
     preferred = ["mapping", "map", "field_mapping", "column_mapping"]
     lower_names = {name.lower(): name for name in xls.sheet_names}
     for p in preferred:
@@ -331,7 +367,9 @@ def _detect_header_row(raw_df: pd.DataFrame) -> int | None:
     source_system_triplet = {"table", "field", "mappingsource"}
     fallback_source_only_row: int | None = None
 
-    for i, row in raw_df.head(60).iterrows():
+    # Scan deeper because many templates include title/banner rows before headers.
+    scan_limit = min(500, len(raw_df))
+    for i, row in raw_df.head(scan_limit).iterrows():
         values = {_norm(v) for v in row.tolist() if not _is_blank(v)}
         if any(marker in values for marker in source_markers) and any(marker in values for marker in target_markers):
             return int(i)
