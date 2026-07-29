@@ -32,6 +32,11 @@ NON_KEY_TOKENS = {
     "primary",
     "language",
     "priority",
+    "payment",
+    "terms",
+    "method",
+    "service",
+    "group",
 }
 KEY_SUFFIXES = ("id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference")
 GENERIC_JOIN_TOKENS = {
@@ -707,6 +712,20 @@ def _is_likely_key_field(field_name: str) -> bool:
     return any(hint in merged for hint in KEY_HINT_TOKENS)
 
 
+def _is_strong_join_key(field_name: str) -> bool:
+    """Stricter key signal used only for inferred join conditions."""
+    tokens = _field_tokens(field_name)
+    merged = _norm(field_name)
+    if not _is_likely_key_field(field_name):
+        return False
+    if tokens & NON_KEY_TOKENS:
+        return False
+    # Explicit strong suffix/pattern markers.
+    if any(merged.endswith(sfx) for sfx in KEY_SUFFIXES):
+        return True
+    return any(h in merged for h in {"id", "no", "code", "account", "key", "ref"})
+
+
 def _canonical_join_key(field_name: str) -> str:
     """Build a comparable key signature for generic join-key matching."""
     merged = _norm(field_name)
@@ -925,6 +944,9 @@ def _infer_join_condition(
     exact_key_pairs: list[tuple[int, str, str]] = []
     for bf in base_fields:
         for of in other_fields:
+            if not (_is_strong_join_key(bf) and _is_strong_join_key(of)):
+                continue
+
             bf_norm = _norm(bf)
             of_norm = _norm(of)
             bf_key = _canonical_join_key(bf)
@@ -957,7 +979,7 @@ def _infer_join_condition(
     related_key_pairs: list[tuple[int, str, str]] = []
     for bf in base_fields:
         for of in other_fields:
-            if not (_is_likely_key_field(bf) and _is_likely_key_field(of)):
+            if not (_is_strong_join_key(bf) and _is_strong_join_key(of)):
                 continue
             if not _is_related_join_key_pair(bf, of):
                 continue
@@ -1001,8 +1023,12 @@ def _infer_join_condition(
 
     best: tuple[int, str, str] | None = None
     for bf in base_fields:
+        if not _is_strong_join_key(bf):
+            continue
         base_score = _field_score(bf, other_tokens)
         for of in other_fields:
+            if not _is_strong_join_key(of):
+                continue
             other_score = _field_score(of, base_tokens)
             bf_is_key = _is_likely_key_field(bf)
             of_is_key = _is_likely_key_field(of)
