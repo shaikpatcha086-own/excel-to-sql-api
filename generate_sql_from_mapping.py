@@ -28,9 +28,12 @@ NON_KEY_TOKENS = {
     "description",
     "email",
     "phone",
+    "contact",
+    "primary",
     "language",
     "priority",
 }
+KEY_SUFFIXES = ("id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference")
 
 
 def review_sql(sql_text: str) -> list[str]:
@@ -672,7 +675,7 @@ def _field_score(field_name: str, table_tokens: set[str]) -> int:
     if "code" in tokens:
         score += 3
     if "id" in tokens:
-        score += 2
+        score += 8
     if tokens & NON_KEY_TOKENS:
         score -= 3
     if len(tokens) <= 3:
@@ -688,6 +691,26 @@ def _is_likely_key_field(field_name: str) -> bool:
         return True
     merged = _norm(field_name)
     return any(hint in merged for hint in KEY_HINT_TOKENS)
+
+
+def _canonical_join_key(field_name: str) -> str:
+    """Build a comparable key signature for generic join-key matching."""
+    merged = _norm(field_name)
+    if not merged:
+        return ""
+
+    # Remove common key suffixes repeatedly (e.g., customerid, customercode).
+    changed = True
+    while changed:
+        changed = False
+        for suffix in KEY_SUFFIXES:
+            if merged.endswith(suffix) and len(merged) > len(suffix):
+                merged = merged[: -len(suffix)]
+                changed = True
+
+    # Remove repeated trailing digits if present in legacy column names.
+    merged = re.sub(r"\d+$", "", merged)
+    return merged
 
 
 def _base_table_score(
@@ -864,6 +887,38 @@ def _infer_join_condition(
     if not base_fields or not other_fields:
         return None
 
+    # Prefer exact/canonical same key names first (generic, not hardcoded to one field).
+    exact_key_pairs: list[tuple[int, str, str]] = []
+    for bf in base_fields:
+        for of in other_fields:
+            bf_norm = _norm(bf)
+            of_norm = _norm(of)
+            bf_key = _canonical_join_key(bf)
+            of_key = _canonical_join_key(of)
+
+            same_name = bf_norm == of_norm
+            same_canonical = bool(bf_key) and bf_key == of_key
+            if not (same_name or same_canonical):
+                continue
+            if not (_is_likely_key_field(bf) or _is_likely_key_field(of)):
+                continue
+
+            score = 0
+            if same_name:
+                score += 20
+            if same_canonical:
+                score += 14
+            merged = bf_norm
+            if "id" in merged:
+                score += 20
+            score += _field_score(bf, set()) + _field_score(of, set())
+            exact_key_pairs.append((score, bf, of))
+
+    if exact_key_pairs:
+        exact_key_pairs.sort(reverse=True)
+        _, bf, of = exact_key_pairs[0]
+        return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
     base_tokens = _field_tokens(base_table)
     other_tokens = _field_tokens(other_table)
 
@@ -901,6 +956,8 @@ def _infer_join_condition(
                 score += 10
                 if _is_likely_key_field(bf) and _is_likely_key_field(of):
                     score += 25
+                if "id" in _norm(bf):
+                    score += 20
             if bf.lower() == of.lower():
                 score += 5
             if _is_likely_key_field(bf) and _is_likely_key_field(of):
