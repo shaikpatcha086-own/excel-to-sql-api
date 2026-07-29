@@ -39,6 +39,7 @@ NON_KEY_TOKENS = {
     "group",
 }
 KEY_SUFFIXES = ("id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference")
+GENERIC_KEY_FAMILIES = {"id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference"}
 GENERIC_JOIN_TOKENS = {
     "id",
     "code",
@@ -384,6 +385,14 @@ def _field_tokens(text: str) -> set[str]:
     cleaned = _clean(text).lower()
     tokens = set(re.findall(r"[a-z0-9]+", cleaned))
     tokens |= {t.replace("_", "") for t in tokens}
+    # Expand composite key tokens like clientid -> client + id.
+    expanded = set(tokens)
+    for tok in list(tokens):
+        for suffix in KEY_SUFFIXES:
+            if tok.endswith(suffix) and len(tok) > len(suffix):
+                expanded.add(suffix)
+                expanded.add(tok[: -len(suffix)])
+    tokens = expanded
     return {t for t in tokens if t}
 
 
@@ -720,6 +729,9 @@ def _is_strong_join_key(field_name: str) -> bool:
         return False
     if tokens & NON_KEY_TOKENS:
         return False
+    # Reject business IDs that are clearly non-join dimensions like payment terms/group IDs.
+    if any(nk in merged for nk in NON_KEY_TOKENS):
+        return False
     # Explicit strong suffix/pattern markers.
     if any(merged.endswith(sfx) for sfx in KEY_SUFFIXES):
         return True
@@ -764,6 +776,20 @@ def _is_related_join_key_pair(left_field: str, right_field: str) -> bool:
 
     # Fallback: semantic overlap on non-generic tokens (e.g., customer/account).
     return bool(_join_semantic_tokens(left_field) & _join_semantic_tokens(right_field))
+
+
+def _table_entity_family(table_name: str) -> str:
+    norm_tbl = _norm(_clean_table_name(table_name))
+    for family in ("customer", "vendor", "item", "account", "invoice", "order"):
+        if family in norm_tbl:
+            return family
+    return ""
+
+
+def _is_generic_key_field(field_name: str) -> bool:
+    canon = _canonical_join_key(field_name)
+    raw = _norm(field_name)
+    return canon in GENERIC_KEY_FAMILIES or raw in GENERIC_KEY_FAMILIES
 
 
 def _base_table_score(
@@ -984,6 +1010,36 @@ def _infer_join_condition(
 
         bf, of = matched_pair
         return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
+    # Same-entity override: allow generic key on one side to match specific key on the other
+    # when both tables represent the same business entity (e.g., Customer No <-> ClientID).
+    if _table_entity_family(base_table) and _table_entity_family(base_table) == _table_entity_family(other_table):
+        base_generic = [bf for bf in base_fields if _is_strong_join_key(bf) and _is_generic_key_field(bf)]
+        other_generic = [of for of in other_fields if _is_strong_join_key(of) and _is_generic_key_field(of)]
+        base_specific = [bf for bf in base_fields if _is_strong_join_key(bf) and not _is_generic_key_field(bf)]
+        other_specific = [of for of in other_fields if _is_strong_join_key(of) and not _is_generic_key_field(of)]
+
+        best_pair: tuple[int, str, str] | None = None
+
+        for bf in base_generic:
+            for of in other_specific:
+                score = _field_score(bf, set()) + _field_score(of, set()) + 22
+                if "id" in _norm(of):
+                    score += 6
+                if best_pair is None or score > best_pair[0]:
+                    best_pair = (score, bf, of)
+
+        for bf in base_specific:
+            for of in other_generic:
+                score = _field_score(bf, set()) + _field_score(of, set()) + 22
+                if "id" in _norm(bf):
+                    score += 6
+                if best_pair is None or score > best_pair[0]:
+                    best_pair = (score, bf, of)
+
+        if best_pair is not None:
+            _, bf, of = best_pair
+            return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
 
     # Prefer exact/canonical same key names first (generic, not hardcoded to one field).
     exact_key_pairs: list[tuple[int, str, str]] = []
