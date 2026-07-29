@@ -38,6 +38,18 @@ NON_KEY_TOKENS = {
     "service",
     "group",
 }
+NON_JOIN_ID_TOKENS = {
+    "tax",
+    "vat",
+    "salestax",
+    "payment",
+    "terms",
+    "method",
+    "service",
+    "group",
+    "priority",
+    "language",
+}
 KEY_SUFFIXES = ("id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference")
 GENERIC_KEY_FAMILIES = {"id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference"}
 GENERIC_JOIN_TOKENS = {
@@ -818,6 +830,22 @@ def _best_entity_id_key_field(fields: list[str], entity_family: str) -> str | No
     scored: list[tuple[int, str]] = []
     for f in candidates:
         n = _norm(f)
+        toks = _field_tokens(f)
+
+        # Reject non-join business IDs such as SalesTaxId, PaymentTermsId, etc.
+        if toks & NON_JOIN_ID_TOKENS:
+            continue
+        if any(tok in n for tok in NON_JOIN_ID_TOKENS):
+            continue
+
+        # Only allow fields that look tied to the entity identity.
+        entity_tokens = {entity_family} if entity_family else set()
+        entity_tokens |= {"client", "customer", "vendor", "item", "account"}
+        has_entity_affinity = bool(toks & entity_tokens) or any(tok in n for tok in entity_tokens)
+
+        if "id" not in n or not has_entity_affinity:
+            continue
+
         s = _field_score(f, set())
         if "id" in n:
             s += 12
@@ -946,6 +974,18 @@ def _collect_table_fields(
     return table_fields
 
 
+def _lookup_table_fields(table_fields: dict[str, list[str]], table_name: str) -> list[str]:
+    """Lookup table fields with tolerant table-name matching (spaces/underscores/case)."""
+    if table_name in table_fields:
+        return table_fields[table_name]
+
+    target_key = _norm(_clean_table_name(table_name))
+    for known_name, fields in table_fields.items():
+        if _norm(_clean_table_name(known_name)) == target_key:
+            return fields
+    return []
+
+
 def _best_table_alias(table_name: str, used_aliases: set[str]) -> str:
     alias = _table_alias(table_name)
     if alias not in used_aliases:
@@ -998,8 +1038,8 @@ def _infer_join_condition(
     source_field_cols = _prioritize_source_field_cols(df, source_field_cols, source_table_cols, mapping_source_cols)
 
     table_fields = _collect_table_fields(df, source_table_cols, source_field_cols, mapping_source_cols)
-    base_fields = table_fields.get(base_table, [])
-    other_fields = table_fields.get(other_table, [])
+    base_fields = _lookup_table_fields(table_fields, base_table)
+    other_fields = _lookup_table_fields(table_fields, other_table)
 
     other_norm = _norm(other_table)
 
