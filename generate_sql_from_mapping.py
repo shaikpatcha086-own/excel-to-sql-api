@@ -724,12 +724,27 @@ def _canonical_join_key(field_name: str) -> str:
 
     # Remove repeated trailing digits if present in legacy column names.
     merged = re.sub(r"\d+$", "", merged)
-    return merged
+    return merged or _norm(field_name)
 
 
 def _join_semantic_tokens(field_name: str) -> set[str]:
     tokens = _field_tokens(field_name)
     return {t for t in tokens if t and t not in GENERIC_JOIN_TOKENS and t not in NON_KEY_TOKENS}
+
+
+def _is_related_join_key_pair(left_field: str, right_field: str) -> bool:
+    left_norm = _norm(left_field)
+    right_norm = _norm(right_field)
+    if left_norm == right_norm:
+        return True
+
+    left_key = _canonical_join_key(left_field)
+    right_key = _canonical_join_key(right_field)
+    if left_key and right_key and left_key == right_key:
+        return True
+
+    # Fallback: semantic overlap on non-generic tokens (e.g., customer/account).
+    return bool(_join_semantic_tokens(left_field) & _join_semantic_tokens(right_field))
 
 
 def _base_table_score(
@@ -938,6 +953,25 @@ def _infer_join_condition(
         _, bf, of = exact_key_pairs[0]
         return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
 
+    # Second pass: related key-family matches (e.g., CustomerID <-> Customer No).
+    related_key_pairs: list[tuple[int, str, str]] = []
+    for bf in base_fields:
+        for of in other_fields:
+            if not (_is_likely_key_field(bf) and _is_likely_key_field(of)):
+                continue
+            if not _is_related_join_key_pair(bf, of):
+                continue
+
+            score = _field_score(bf, set()) + _field_score(of, set()) + 18
+            if "id" in _norm(bf) and "id" in _norm(of):
+                score += 10
+            related_key_pairs.append((score, bf, of))
+
+    if related_key_pairs:
+        related_key_pairs.sort(reverse=True)
+        _, bf, of = related_key_pairs[0]
+        return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
     base_tokens = _field_tokens(base_table)
     other_tokens = _field_tokens(other_table)
 
@@ -970,6 +1004,13 @@ def _infer_join_condition(
         base_score = _field_score(bf, other_tokens)
         for of in other_fields:
             other_score = _field_score(of, base_tokens)
+            bf_is_key = _is_likely_key_field(bf)
+            of_is_key = _is_likely_key_field(of)
+
+            # Avoid joins that are key-like but clearly unrelated key families.
+            if bf_is_key and of_is_key and not _is_related_join_key_pair(bf, of):
+                continue
+
             score = base_score + other_score
             same_norm = _norm(bf) == _norm(of)
             same_canonical = _canonical_join_key(bf) and _canonical_join_key(bf) == _canonical_join_key(of)
@@ -983,7 +1024,7 @@ def _infer_join_condition(
                     score += 20
             if bf.lower() == of.lower():
                 score += 5
-            if _is_likely_key_field(bf) and _is_likely_key_field(of):
+            if bf_is_key and of_is_key:
                 score += 8
                 # Penalize mismatched key families such as ClientID vs PaymentTermsId.
                 if not same_norm and not same_canonical and not semantic_overlap:
@@ -997,7 +1038,7 @@ def _infer_join_condition(
             if best is None or score > best[0]:
                 best = (score, bf, of)
 
-    if best and best[0] >= 6:
+    if best and best[0] >= 10:
         _, bf, of = best
         return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
 
