@@ -1,8 +1,11 @@
 import argparse
+import json
+import os
 import re
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 
 STATIC_MARKERS = {"static", "const", "constant", "literal", "hardcoded", "hard-coded"}
@@ -50,6 +53,123 @@ NON_JOIN_ID_TOKENS = {
     "priority",
     "language",
 }
+
+
+def _llm_enabled() -> bool:
+    return os.getenv("ENABLE_LLM_JOIN_REASONING", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _llm_headers() -> dict[str, str] | None:
+    api_key = os.getenv("LLM_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    api_type = os.getenv("LLM_API_TYPE", "openai").strip().lower()
+    if api_type == "azure":
+        return {
+            "Content-Type": "application/json",
+            "api-key": api_key,
+        }
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+
+def _validate_join_condition(
+    condition: str,
+    base_alias: str,
+    other_alias: str,
+    base_fields: list[str],
+    other_fields: list[str],
+) -> str | None:
+    cond = (condition or "").strip()
+    if not cond or "=" not in cond:
+        return None
+
+    cond = re.sub(r"^\s*ON\s+", "", cond, flags=re.IGNORECASE).strip()
+    pattern = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.\[([^\]]+)\]\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.\[([^\]]+)\]\s*$")
+    m = pattern.match(cond)
+    if not m:
+        return None
+
+    left_alias, left_field, right_alias, right_field = m.groups()
+    base_norm = {_norm(f): f for f in base_fields}
+    other_norm = {_norm(f): f for f in other_fields}
+
+    def ok_pair(a1: str, f1: str, a2: str, f2: str) -> bool:
+        if a1 == other_alias and a2 == base_alias:
+            return _norm(f1) in other_norm and _norm(f2) in base_norm
+        if a1 == base_alias and a2 == other_alias:
+            return _norm(f1) in base_norm and _norm(f2) in other_norm
+        return False
+
+    if not ok_pair(left_alias, left_field, right_alias, right_field):
+        return None
+
+    # Normalize order as other_alias = base_alias
+    if left_alias == other_alias and right_alias == base_alias:
+        return f"{other_alias}.{_bracket(left_field)} = {base_alias}.{_bracket(right_field)}"
+    return f"{other_alias}.{_bracket(right_field)} = {base_alias}.{_bracket(left_field)}"
+
+
+def _llm_suggest_join_condition(
+    base_table: str,
+    base_alias: str,
+    other_table: str,
+    other_alias: str,
+    base_fields: list[str],
+    other_fields: list[str],
+) -> str | None:
+    if not _llm_enabled():
+        return None
+
+    api_url = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions").strip()
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+    headers = _llm_headers()
+    if not api_url or not model or headers is None:
+        return None
+
+    prompt = {
+        "task": "Choose best SQL join condition between two tables.",
+        "rules": [
+            "Return exactly one condition using aliases and bracketed field names.",
+            "Use format: <other_alias>.[field] = <base_alias>.[field]",
+            "Prefer entity identity keys and avoid tax/payment/group/language/priority fields.",
+            "If uncertain, return empty string.",
+        ],
+        "base_table": base_table,
+        "base_alias": base_alias,
+        "base_fields": base_fields,
+        "other_table": other_table,
+        "other_alias": other_alias,
+        "other_fields": other_fields,
+        "output": {"condition": "string"},
+    }
+
+    body = {
+        "model": model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": "You are a strict SQL join planner."},
+            {"role": "user", "content": json.dumps(prompt)},
+        ],
+    }
+
+    try:
+        resp = requests.post(api_url, headers=headers, json=body, timeout=30)
+        if resp.status_code >= 400:
+            return None
+        payload = resp.json()
+        content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not content:
+            return None
+        parsed = json.loads(content)
+        raw_condition = _clean(parsed.get("condition", ""))
+        return _validate_join_condition(raw_condition, base_alias, other_alias, base_fields, other_fields)
+    except Exception:
+        return None
 KEY_SUFFIXES = ("id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference")
 GENERIC_KEY_FAMILIES = {"id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference"}
 GENERIC_JOIN_TOKENS = {
@@ -1302,6 +1422,18 @@ def _infer_join_condition(
     if best and best[0] >= 10:
         _, bf, of = best
         return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
+    # Optional LLM fallback for ambiguous join cases.
+    llm_condition = _llm_suggest_join_condition(
+        base_table=base_table,
+        base_alias=base_alias,
+        other_table=other_table,
+        other_alias=other_alias,
+        base_fields=base_fields,
+        other_fields=other_fields,
+    )
+    if llm_condition:
+        return llm_condition
 
     return None
 
