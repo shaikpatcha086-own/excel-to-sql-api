@@ -1000,9 +1000,6 @@ def _infer_join_condition(
         )
         return f"{other_alias}.[NAV_Code] = {base_alias}.{_bracket(base_key)}"
 
-    if not base_fields or not other_fields:
-        return None
-
     # Deterministic override: if there is exactly one common strong key family,
     # force that join and avoid heuristic ambiguity.
     base_family_fields: dict[str, list[str]] = {}
@@ -1095,6 +1092,9 @@ def _infer_join_condition(
             bf = base_best_generic or "No_"
             of = other_best_specific
             return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
+    if not base_fields or not other_fields:
+        return None
 
     # Prefer exact/canonical same key names first (generic, not hardcoded to one field).
     exact_key_pairs: list[tuple[int, str, str]] = []
