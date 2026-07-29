@@ -792,6 +792,43 @@ def _is_generic_key_field(field_name: str) -> bool:
     return canon in GENERIC_KEY_FAMILIES or raw in GENERIC_KEY_FAMILIES
 
 
+def _best_specific_key_field(fields: list[str], entity_family: str) -> str | None:
+    candidates = [f for f in fields if _is_strong_join_key(f) and not _is_generic_key_field(f)]
+    if not candidates:
+        return None
+
+    def score(field_name: str) -> int:
+        s = _field_score(field_name, set())
+        norm_field = _norm(field_name)
+        if entity_family and entity_family in norm_field:
+            s += 8
+        if "id" in norm_field:
+            s += 6
+        return s
+
+    return sorted(candidates, key=score, reverse=True)[0]
+
+
+def _best_generic_key_field(fields: list[str]) -> str | None:
+    candidates = [f for f in fields if _is_strong_join_key(f) and _is_generic_key_field(f)]
+    if not candidates:
+        return None
+
+    # Prefer classic PK-like generic names first.
+    priority = ["no_", "no", "id", "code", "key", "account"]
+
+    def score(field_name: str) -> tuple[int, int]:
+        n = _norm(field_name)
+        pri = 100
+        for idx, token in enumerate(priority):
+            if token in n:
+                pri = idx
+                break
+        return (pri, -_field_score(field_name, set()))
+
+    return sorted(candidates, key=score)[0]
+
+
 def _base_table_score(
     table_name: str,
     row_count: int,
@@ -1014,6 +1051,7 @@ def _infer_join_condition(
     # Same-entity override: allow generic key on one side to match specific key on the other
     # when both tables represent the same business entity (e.g., Customer No <-> ClientID).
     if _table_entity_family(base_table) and _table_entity_family(base_table) == _table_entity_family(other_table):
+        entity_family = _table_entity_family(base_table)
         base_generic = [bf for bf in base_fields if _is_strong_join_key(bf) and _is_generic_key_field(bf)]
         other_generic = [of for of in other_fields if _is_strong_join_key(of) and _is_generic_key_field(of)]
         base_specific = [bf for bf in base_fields if _is_strong_join_key(bf) and not _is_generic_key_field(bf)]
@@ -1039,6 +1077,23 @@ def _infer_join_condition(
 
         if best_pair is not None:
             _, bf, of = best_pair
+            return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
+        # If mapped fields are incomplete, pair a specific key from one side with a
+        # generic key from the other side (or default generic key label).
+        base_best_specific = _best_specific_key_field(base_fields, entity_family)
+        other_best_specific = _best_specific_key_field(other_fields, entity_family)
+        base_best_generic = _best_generic_key_field(base_fields)
+        other_best_generic = _best_generic_key_field(other_fields)
+
+        if base_best_specific and (other_best_generic or not other_best_specific):
+            bf = base_best_specific
+            of = other_best_generic or "No_"
+            return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
+        if other_best_specific and (base_best_generic or not base_best_specific):
+            bf = base_best_generic or "No_"
+            of = other_best_specific
             return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
 
     # Prefer exact/canonical same key names first (generic, not hardcoded to one field).
