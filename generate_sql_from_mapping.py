@@ -809,6 +809,32 @@ def _best_specific_key_field(fields: list[str], entity_family: str) -> str | Non
     return sorted(candidates, key=score, reverse=True)[0]
 
 
+def _best_entity_id_key_field(fields: list[str], entity_family: str) -> str | None:
+    """Prefer specific keys that explicitly look like entity IDs (e.g., ClientID)."""
+    candidates = [f for f in fields if _is_strong_join_key(f) and not _is_generic_key_field(f)]
+    if not candidates:
+        return None
+
+    scored: list[tuple[int, str]] = []
+    for f in candidates:
+        n = _norm(f)
+        s = _field_score(f, set())
+        if "id" in n:
+            s += 12
+        if entity_family and entity_family in n:
+            s += 10
+        # De-prioritize account-like business keys when an entity ID exists.
+        if "account" in n and "id" not in n:
+            s -= 4
+        scored.append((s, f))
+
+    scored.sort(reverse=True)
+    top_score, top_field = scored[0]
+    if top_score >= 10:
+        return top_field
+    return None
+
+
 def _best_generic_key_field(fields: list[str]) -> str | None:
     candidates = [f for f in fields if _is_strong_join_key(f) and _is_generic_key_field(f)]
     if not candidates:
@@ -1092,6 +1118,16 @@ def _infer_join_condition(
             bf = base_best_generic or "No_"
             of = other_best_specific
             return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
+        # Final same-entity fallback: if no related pair was found, bind entity-ID
+        # style key from one side to default generic key on the other side.
+        base_entity_id = _best_entity_id_key_field(base_fields, entity_family)
+        other_entity_id = _best_entity_id_key_field(other_fields, entity_family)
+
+        if other_entity_id:
+            return f"{other_alias}.{_bracket(other_entity_id)} = {base_alias}.[No_]"
+        if base_entity_id:
+            return f"{other_alias}.[No_] = {base_alias}.{_bracket(base_entity_id)}"
 
     if not base_fields or not other_fields:
         return None
