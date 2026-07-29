@@ -17,6 +17,20 @@ COMMON_ALIAS_HINTS = {
     "country": {"country", "countryregion"},
     "terms2": {"mapping"},
 }
+KEY_HINT_TOKENS = {"id", "no", "code", "key", "account", "acct", "number", "num", "client"}
+NON_KEY_TOKENS = {
+    "address",
+    "city",
+    "country",
+    "region",
+    "county",
+    "name",
+    "description",
+    "email",
+    "phone",
+    "language",
+    "priority",
+}
 
 
 def review_sql(sql_text: str) -> list[str]:
@@ -272,6 +286,29 @@ def _mapping_source_entity(mapping_source: str, source_field: str = "") -> str:
     # Accept text that looks like an entity token (letters/digits/_/$/- and spaces).
     if re.fullmatch(r"[A-Za-z0-9_$/\- ]+", standalone):
         return standalone.strip()
+
+    return ""
+
+
+def _mapping_source_logic_expr(mapping_source: str, source_field: str = "") -> str:
+    """Treat Mapping Source as transformation logic when it looks like an expression."""
+    value = _clean(mapping_source)
+    if not value or _is_no_map(value):
+        return ""
+
+    raw = value.strip()
+    # Pure entity token is for source-table inference, not expression use.
+    if re.fullmatch(r"\[?[A-Za-z0-9_$/\- ]+\]?", raw):
+        if _mapping_source_entity(raw, source_field):
+            return ""
+
+    # SQL logic markers (CASE statements, functions, predicates, operators, table.field refs).
+    if re.search(r"\b(case|when|then|else|end|coalesce|isnull|cast|convert|iif)\b", raw, re.IGNORECASE):
+        return raw
+    if re.search(r"[=+*/'()]", raw):
+        return raw
+    if re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*\[?[A-Za-z0-9_ #$/\-]+\]?", raw):
+        return raw
 
     return ""
 
@@ -636,9 +673,86 @@ def _field_score(field_name: str, table_tokens: set[str]) -> int:
         score += 3
     if "id" in tokens:
         score += 2
+    if tokens & NON_KEY_TOKENS:
+        score -= 3
     if len(tokens) <= 3:
         score += 1
     return score
+
+
+def _is_likely_key_field(field_name: str) -> bool:
+    tokens = _field_tokens(field_name)
+    if not tokens:
+        return False
+    if tokens & KEY_HINT_TOKENS:
+        return True
+    merged = _norm(field_name)
+    return any(hint in merged for hint in KEY_HINT_TOKENS)
+
+
+def _base_table_score(
+    table_name: str,
+    row_count: int,
+    mapped_fields: list[str],
+    mapping_source_hits: int,
+) -> int:
+    score = row_count * 5
+    key_fields = sum(1 for f in mapped_fields if _is_likely_key_field(f))
+    score += key_fields * 8
+    score += mapping_source_hits * 3
+
+    # Prefer stable business entities as anchors over lookup-like tables.
+    norm_tbl = _norm(table_name)
+    if any(x in norm_tbl for x in {"customer", "vendor", "item", "account"}):
+        score += 5
+    if any(x in norm_tbl for x in {"mapping", "lookup", "reference"}):
+        score -= 3
+    return score
+
+
+def _choose_base_table(
+    table_frequency: dict[str, int],
+    table_fields: dict[str, list[str]],
+    mapping_source_hits: dict[str, int],
+    explicit_table_frequency: dict[str, int] | None = None,
+) -> str:
+    if not table_frequency:
+        return ""
+
+    # First priority: tables explicitly present in the source Table column.
+    if explicit_table_frequency:
+        explicit_candidates = {k: v for k, v in explicit_table_frequency.items() if k in table_frequency}
+        if explicit_candidates:
+            explicit_best = ""
+            explicit_best_score = -10**9
+            for tbl, freq in explicit_candidates.items():
+                score = _base_table_score(
+                    table_name=tbl,
+                    row_count=freq,
+                    mapped_fields=table_fields.get(tbl, []),
+                    mapping_source_hits=mapping_source_hits.get(tbl, 0),
+                )
+                # Boost explicit-table candidates so they always outrank inferred-only tables.
+                score += 10**6
+                if score > explicit_best_score:
+                    explicit_best_score = score
+                    explicit_best = tbl
+            if explicit_best:
+                return explicit_best
+
+    best_table = ""
+    best_score = -10**9
+    for tbl, freq in table_frequency.items():
+        score = _base_table_score(
+            table_name=tbl,
+            row_count=freq,
+            mapped_fields=table_fields.get(tbl, []),
+            mapping_source_hits=mapping_source_hits.get(tbl, 0),
+        )
+        if score > best_score:
+            best_score = score
+            best_table = tbl
+    return best_table
 
 
 def _collect_table_fields(
@@ -785,8 +899,14 @@ def _infer_join_condition(
             score = base_score + other_score
             if _norm(bf) == _norm(of):
                 score += 10
+                if _is_likely_key_field(bf) and _is_likely_key_field(of):
+                    score += 25
             if bf.lower() == of.lower():
                 score += 5
+            if _is_likely_key_field(bf) and _is_likely_key_field(of):
+                score += 8
+            if (_field_tokens(bf) & NON_KEY_TOKENS) or (_field_tokens(of) & NON_KEY_TOKENS):
+                score -= 6
             if any(tok in _field_tokens(bf) for tok in other_tokens):
                 score += 4
             if any(tok in _field_tokens(of) for tok in base_tokens):
@@ -885,21 +1005,45 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
             alias_map[tbl] = alias
 
     table_frequency: dict[str, int] = {}
+    explicit_table_frequency: dict[str, int] = {}
+    table_fields_seen: dict[str, list[str]] = {}
+    mapping_source_hits: dict[str, int] = {}
     for _, row in df.iterrows():
         raw_tbl = _first_non_empty(row, source_table_cols)
         src = _first_non_empty(row, source_field_cols)
         tgt = _clean(row[target_field_col])
-        trn = _clean(row[transform_col]) if transform_col else ""
         mapping_source_value = _first_non_empty(row, mapping_source_cols)
+        trn = _clean(row[transform_col]) if transform_col else ""
+        mapping_expr = _mapping_source_logic_expr(mapping_source_value, src)
+        effective_trn = trn or mapping_expr
         tbl = _effective_source_table(raw_tbl, mapping_source_value, src)
-        keep_row = bool(tgt) and (not _is_no_map(src))
+        keep_row = bool(tgt) and ((not _is_no_map(src)) or bool(effective_trn))
         if tbl and keep_row and not _is_static(tbl, src):
             clean_tbl = _clean_table_name(tbl)
             table_frequency[clean_tbl] = table_frequency.get(clean_tbl, 0) + 1
+
+            explicit_tbl = _clean_table_name(raw_tbl)
+            if explicit_tbl:
+                explicit_table_frequency[explicit_tbl] = explicit_table_frequency.get(explicit_tbl, 0) + 1
+
+            _, src_col = _split_table_col(src)
+            if clean_tbl not in table_fields_seen:
+                table_fields_seen[clean_tbl] = []
+            if src_col and src_col not in table_fields_seen[clean_tbl]:
+                table_fields_seen[clean_tbl].append(src_col)
+
+            mapped_entity = _mapping_source_entity(mapping_source_value, src)
+            if mapped_entity and _norm(_clean_table_name(mapped_entity)) == _norm(clean_tbl):
+                mapping_source_hits[clean_tbl] = mapping_source_hits.get(clean_tbl, 0) + 1
     for tbl in table_frequency:
         add_table(tbl)
 
-    base_table = max(table_frequency.items(), key=lambda item: item[1])[0] if table_frequency else ""
+    base_table = _choose_base_table(
+        table_frequency,
+        table_fields_seen,
+        mapping_source_hits,
+        explicit_table_frequency=explicit_table_frequency,
+    )
 
     for _, row in df.iterrows():
         raw_source_table = _first_non_empty(row, source_table_cols)
@@ -907,9 +1051,11 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         source_field = _first_non_empty(row, source_field_cols)
         source_table = _effective_source_table(raw_source_table, mapping_source_value, source_field)
         transform_logic = _clean(row[transform_col]) if transform_col else ""
+        mapping_expr = _mapping_source_logic_expr(mapping_source_value, source_field)
+        effective_transform = transform_logic or mapping_expr
         if source_table:
             add_table(source_table)
-        for ref_alias in _transform_alias_refs(transform_logic):
+        for ref_alias in _transform_alias_refs(effective_transform):
             if ref_alias == "terms":
                 add_table("PaymentTerms_Mapping")
             elif ref_alias == "ship":
@@ -936,13 +1082,15 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         source_table = _effective_source_table(raw_source_table, mapping_source_value, source_field)
         target_field = _clean(row[target_field_col])
         transform_logic = _clean(row[transform_col]) if transform_col else ""
+        mapping_expr = _mapping_source_logic_expr(mapping_source_value, source_field)
+        effective_transform = transform_logic or mapping_expr
         static_value = _clean(row[static_col]) if static_col else ""
 
         if not target_field:
             continue
 
         # Keep rows only when source field is mapped (source Field <> NoMap).
-        keep_row = not _is_no_map(source_field)
+        keep_row = (not _is_no_map(source_field)) or bool(effective_transform)
         if not keep_row:
             continue
 
@@ -952,25 +1100,30 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         ensure_table_aliases()
 
         expr = ""
-        if transform_logic:
-            expr = _normalize_transform(transform_logic, alias_map)
+        expr_origin = ""
+        if effective_transform:
+            expr = _normalize_transform(effective_transform, alias_map)
+            expr_origin = "Transformation Logic" if transform_logic else "Mapping Source"
         elif _is_static(source_table, source_field):
             static_raw = static_value if static_value else source_field
             expr = _sql_literal(static_raw)
+            expr_origin = "Static Value"
         else:
             tbl_from_field, col = _split_table_col(source_field)
             effective_table = _clean_table_name(tbl_from_field or source_table or base_table)
             if not effective_table:
                 # If table is missing and expression is direct column, keep it as-is.
                 expr = col
+                expr_origin = "Source Field"
             else:
                 if effective_table not in alias_map:
                     add_table(effective_table)
                     ensure_table_aliases()
                 expr = _source_ref(alias_map.get(effective_table, _table_alias(effective_table)), col)
+                expr_origin = "Source Field"
 
         if expr:
-            select_parts.append(f"    {expr} AS {_bracket(target_field)}")
+            select_parts.append(f"    {expr} AS {_bracket(target_field)} /* source: {expr_origin} */")
 
     if not select_parts:
         raise ValueError("No mapped rows found after filtering rules were applied.")
