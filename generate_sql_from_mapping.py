@@ -940,6 +940,51 @@ def _infer_join_condition(
     if not base_fields or not other_fields:
         return None
 
+    # Deterministic override: if there is exactly one common strong key family,
+    # force that join and avoid heuristic ambiguity.
+    base_family_fields: dict[str, list[str]] = {}
+    for bf in base_fields:
+        if not _is_strong_join_key(bf):
+            continue
+        fam = _canonical_join_key(bf)
+        if not fam:
+            continue
+        base_family_fields.setdefault(fam, []).append(bf)
+
+    other_family_fields: dict[str, list[str]] = {}
+    for of in other_fields:
+        if not _is_strong_join_key(of):
+            continue
+        fam = _canonical_join_key(of)
+        if not fam:
+            continue
+        other_family_fields.setdefault(fam, []).append(of)
+
+    common_families = set(base_family_fields.keys()) & set(other_family_fields.keys())
+    if len(common_families) == 1:
+        family = next(iter(common_families))
+        base_candidates = base_family_fields[family]
+        other_candidates = other_family_fields[family]
+
+        # Prefer exact normalized-name match within the common family.
+        matched_pair: tuple[str, str] | None = None
+        for bf in base_candidates:
+            for of in other_candidates:
+                if _norm(bf) == _norm(of):
+                    matched_pair = (bf, of)
+                    break
+            if matched_pair:
+                break
+
+        if matched_pair is None:
+            # Otherwise pick the strongest key-like columns in that family.
+            bf = sorted(base_candidates, key=lambda x: _field_score(x, set()), reverse=True)[0]
+            of = sorted(other_candidates, key=lambda x: _field_score(x, set()), reverse=True)[0]
+            matched_pair = (bf, of)
+
+        bf, of = matched_pair
+        return f"{other_alias}.{_bracket(of)} = {base_alias}.{_bracket(bf)}"
+
     # Prefer exact/canonical same key names first (generic, not hardcoded to one field).
     exact_key_pairs: list[tuple[int, str, str]] = []
     for bf in base_fields:
