@@ -856,6 +856,9 @@ def _best_entity_id_key_field(fields: list[str], entity_family: str) -> str | No
             s -= 4
         scored.append((s, f))
 
+    if not scored:
+        return None
+
     scored.sort(reverse=True)
     top_score, top_field = scored[0]
     if top_score >= 10:
