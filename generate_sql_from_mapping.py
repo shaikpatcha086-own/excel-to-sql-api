@@ -34,6 +34,20 @@ NON_KEY_TOKENS = {
     "priority",
 }
 KEY_SUFFIXES = ("id", "code", "no", "number", "num", "key", "account", "acct", "ref", "reference")
+GENERIC_JOIN_TOKENS = {
+    "id",
+    "code",
+    "no",
+    "number",
+    "num",
+    "key",
+    "account",
+    "acct",
+    "ref",
+    "reference",
+    "client",
+    "customer",
+}
 
 
 def review_sql(sql_text: str) -> list[str]:
@@ -713,6 +727,11 @@ def _canonical_join_key(field_name: str) -> str:
     return merged
 
 
+def _join_semantic_tokens(field_name: str) -> set[str]:
+    tokens = _field_tokens(field_name)
+    return {t for t in tokens if t and t not in GENERIC_JOIN_TOKENS and t not in NON_KEY_TOKENS}
+
+
 def _base_table_score(
     table_name: str,
     row_count: int,
@@ -952,6 +971,10 @@ def _infer_join_condition(
         for of in other_fields:
             other_score = _field_score(of, base_tokens)
             score = base_score + other_score
+            same_norm = _norm(bf) == _norm(of)
+            same_canonical = _canonical_join_key(bf) and _canonical_join_key(bf) == _canonical_join_key(of)
+            semantic_overlap = _join_semantic_tokens(bf) & _join_semantic_tokens(of)
+
             if _norm(bf) == _norm(of):
                 score += 10
                 if _is_likely_key_field(bf) and _is_likely_key_field(of):
@@ -962,6 +985,9 @@ def _infer_join_condition(
                 score += 5
             if _is_likely_key_field(bf) and _is_likely_key_field(of):
                 score += 8
+                # Penalize mismatched key families such as ClientID vs PaymentTermsId.
+                if not same_norm and not same_canonical and not semantic_overlap:
+                    score -= 30
             if (_field_tokens(bf) & NON_KEY_TOKENS) or (_field_tokens(of) & NON_KEY_TOKENS):
                 score -= 6
             if any(tok in _field_tokens(bf) for tok in other_tokens):
@@ -1157,30 +1183,25 @@ def generate_sql(mapping_file: Path, output_file: Path, sheet_name: str | None =
         ensure_table_aliases()
 
         expr = ""
-        expr_origin = ""
         if effective_transform:
             expr = _normalize_transform(effective_transform, alias_map)
-            expr_origin = "Transformation Logic" if transform_logic else "Mapping Source"
         elif _is_static(source_table, source_field):
             static_raw = static_value if static_value else source_field
             expr = _sql_literal(static_raw)
-            expr_origin = "Static Value"
         else:
             tbl_from_field, col = _split_table_col(source_field)
             effective_table = _clean_table_name(tbl_from_field or source_table or base_table)
             if not effective_table:
                 # If table is missing and expression is direct column, keep it as-is.
                 expr = col
-                expr_origin = "Source Field"
             else:
                 if effective_table not in alias_map:
                     add_table(effective_table)
                     ensure_table_aliases()
                 expr = _source_ref(alias_map.get(effective_table, _table_alias(effective_table)), col)
-                expr_origin = "Source Field"
 
         if expr:
-            select_parts.append(f"    {expr} AS {_bracket(target_field)} /* source: {expr_origin} */")
+            select_parts.append(f"    {expr} AS {_bracket(target_field)}")
 
     if not select_parts:
         raise ValueError("No mapped rows found after filtering rules were applied.")
