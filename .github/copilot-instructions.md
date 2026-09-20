@@ -95,6 +95,15 @@ via a Fabric Lakehouse/Warehouse pipeline.
   - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription` are the assumed D365
     field names for this pattern - confirm the exact names against the actual
     `CustomerPostalAddressStaging` export before relying on them.
+  - The matcher must never let a real source field match a synthetic role/description
+    target (`IsRole*`, `AddressDescription`, `IsPrivate*`, `IsPostalAddress`,
+    `IsLocationOwner`, `IsPrimaryTaxRegistration`, `AddressDefaultRoles`,
+    `AddressLocationRoles`) - these are always populated by the SQL generator's
+    deterministic literals. `IsPrimary` is the sole exception: it may match a real
+    "default address" flag (e.g. `ShipToAddressDefaultShipTo`, matched via a dedicated
+    context-alias rule), but nothing else.
+  - `AddressPostBox` is a distinct address component from `AddressState`/`AddressCity` -
+    a `State`-typed source field must never match a `PostBox`-typed target, or vice versa.
 
 ### Field mapping guards
 
