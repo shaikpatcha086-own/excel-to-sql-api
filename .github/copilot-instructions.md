@@ -3,7 +3,7 @@
 This project migrates QuickBooks Desktop data into D365 Supply Chain Management (D365 SCM),
 via a Fabric Lakehouse/Warehouse pipeline.
 
-## Pattern used for every entity: Led -> St -> Adm
+## Architecture pattern (every entity): Led -> St -> Adm
 
 - `trf.<Entity>LedX` (view) — maps/casts raw source columns to D365 field names and
   datatypes. No business logic here, structural mapping only.
@@ -22,40 +22,97 @@ via a Fabric Lakehouse/Warehouse pipeline.
 - Target: D365 SCM data entities, loaded via `adm.Extract<Entity>` tables in the Fabric
   Warehouse, ready for D365 data entity import.
 
-## Key mapping rules learned so far
+## Global rules (apply to every entity)
 
+- Every generated `LedX` view must carry the QuickBooks `ListID` from the base source
+  table forward as a `LegacyListId` column.
+- Field names in D365 rarely match QuickBooks 1:1 — always confirm exact target field
+  names against the actual staging table export before writing a `LedX` view (e.g.
+  `AddressStreet`, not `DeliveryAddressStreet`, on `CustomerPostalAddressEntity`; role is
+  set via separate `IsRoleX` boolean flags, not the field name). Do not assume field
+  names from general D365 knowledge alone.
+- Credit card fields and other PCI-sensitive data should not be migrated as-is.
 - Never copy QuickBooks `Balance` / `OpenBalance` fields directly into D365 — balances
   are derived from the transaction graph, not stored as ground truth. Reconstruct via
   an opening balance journal instead.
+- QuickBooks stores country as a plain name (e.g. `United States`), while D365
+  `*CountryRegionId` targets expect an ISO code (e.g. `USA`). Never convert this directly
+  in `LedX` (structural mapping only). Instead, `LedX` casts the raw name through
+  unchanged, and the generated `StUp` procedure gets a commented-out crosswalk-join
+  placeholder (`trf.CountryRegionCrosswalk`) for any target field ending in
+  `CountryRegionId`/`CountryRegion` - confirm the real crosswalk table/column names,
+  then enable it.
+
+## Mapping workbook rules (mapper app / Excel output)
+
+- When a target mapping workbook already contains a `Table` column, fill it with the
+  legacy QuickBooks object that supplied the mapping (for example, `Customer`, `Vendor`,
+  or `Invoice`). Do not add, rename, or otherwise modify the workbook's `Table`,
+  `Mapping Source`, `Dependency Source`, or source-field columns beyond their existing
+  mapping roles.
+
+---
+
+## Entity: Customer
+
+### Address fields
+
 - Do not map legacy QuickBooks Customer address fields (`Address*`, `Addr*`,
   `BillAddress*`, `ShipAddress*`, `InvoiceAddress*`, or `DeliveryAddress*`) to generic
   customer `Address*`, `InvoiceAddress*`, or `DeliveryAddress*` targets. These are handled
   separately through `CustomerPostalAddressEntity` / `CustCustomerV3Entity` address flows.
+
+### Active-customer filter
+
+- For the Customer entity only, filter to active customers: add `IsActive = 1` on the base
+  Customer table and on every joined table in that entity's `LedX` view. Do not apply this
+  filter to non-Customer entities (including `CustomerShipToAddress`, whose rows are not
+  filtered by `IsActive`).
+
+### Sub-entity: CustomerShipToAddress -> CustomerPostalAddress (special case)
+
 - QuickBooks `CustomerShipToAddress` has multiple rows per customer (confirmed via
-  `GROUP BY ListID HAVING COUNT(*) > 1`) — dedupe to 1 row per customer before loading
-  Customers V3; load every row into `CustomerPostalAddressEntity`
-  (staging table `CustomerPostalAddressStaging`) for shipping addresses, with
-  `IsRoleDelivery = 1`.
-- QuickBooks `Item` -> D365 **Released Product** (`EcoResProduct` family).
-- Field names in D365 rarely match QuickBooks 1:1 — always confirm exact target field
-  names against the actual staging table export before writing a `LedX` view (e.g.
-  `AddressStreet`, not `DeliveryAddressStreet`, on `CustomerPostalAddressEntity`; role is
-  set via separate `IsRoleX` boolean flags, not the field name).
-- Credit card fields and other PCI-sensitive data should not be migrated as-is.
+  `GROUP BY ListID HAVING COUNT(*) > 1`) and each row carries both `BillAddress*` and
+  `ShipAddress*` columns together. It loads into `CustomerPostalAddressEntity` (staging
+  table `CustomerPostalAddressStaging`), never into `CustCustomerV3Entity`/Customers V3
+  directly.
+- When a mapping maps both prefixes to the same target Address* field, generate the
+  `LedX` view as a `UNION ALL` of a billing branch and a shipping branch instead of a
+  normal 1:1 SELECT:
+  - Billing branch: deduplicate to one row per customer
+    (`ROW_NUMBER() OVER (PARTITION BY ListID ORDER BY EditSequence DESC) = 1`, keeping the
+    most recently changed row - QuickBooks' `EditSequence` is its list change-version
+    column).
+  - Shipping branch: keep every row, unfiltered.
+  - Each branch excludes rows where its own address-line column (Street/Addr1/etc.) is
+    blank (`IS NOT NULL`).
+  - If the target template defines `IsRoleInvoice`/`IsRoleDelivery` fields, set them to
+    literal `1`/`0` per branch (billing = Invoice, shipping = Delivery).
+  - If it defines `AddressDescription`, set it to literal `'Bill-To'`/`'Ship-To'`.
+  - If it defines `IsPrimary`, set billing to `1` and preserve any mapped shipping
+    default-address flag (wrapped as `CASE WHEN <flag> = 1 THEN 1 ELSE 0 END`), else
+    default shipping to `0`.
+  - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription` are the assumed D365
+    field names for this pattern - confirm the exact names against the actual
+    `CustomerPostalAddressStaging` export before relying on them.
+
+### Field mapping guards
+
 - Do not map QuickBooks `CompanyName` to D365 `Company` / legal-entity targets. A D365
   legal entity is not a QuickBooks company-name field.
 - Do not map QuickBooks sales-tax code references (for example,
   `SalesTaxCodeRefFullName`) to D365 boolean or enum sales-tax inclusion fields (for
   example, `IsSalesTaxIncludedInPrice`). Tax-code references and Yes/No flags are distinct.
-- When a target mapping workbook already contains a `Table` column, fill it with the legacy
-  QuickBooks object that supplied the mapping (for example, `Customer`, `Vendor`, or
-  `Invoice`). Do not add, rename, or otherwise modify the workbook's `Table`, `Mapping
-  Source`, `Dependency Source`, or source-field columns beyond their existing mapping roles.
-- Every generated `LedX` view (every entity/object, not just Customer) must carry the
-  QuickBooks `ListID` from the base source table forward as a `LegacyListId` column.
-- For the Customer entity only, filter to active customers: add `IsActive = 1` on the base
-  Customer table and on every joined table in that entity's `LedX` view. Do not apply this
-  filter to non-Customer entities.
+
+## Entity: Vendor
+
+- No vendor-specific mapping rules recorded yet beyond the Global rules above.
+
+## Entity: Item
+
+- QuickBooks `Item` -> D365 **Released Product** (`EcoResProduct` family).
+
+---
 
 ## Conventions to follow when generating new scripts
 
@@ -73,3 +130,7 @@ via a Fabric Lakehouse/Warehouse pipeline.
 - Treat the confirmed rules in both instruction files as mandatory for future mapping,
   workbook, and SQL-generation work. Update an older instruction when a newer confirmed
   rule supersedes it.
+- Add new entities under their own `## Entity: <Name>` heading, with `###` sub-headers for
+  that entity's address handling, sub-entities/special cases, filters, and field mapping
+  guards. If a rule applies to every entity, put it under `## Global rules` instead of
+  duplicating it per entity.
