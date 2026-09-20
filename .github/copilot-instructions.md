@@ -31,7 +31,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
   `AddressStreet`, not `DeliveryAddressStreet`, on `CustomerPostalAddressEntity`; role is
   set via separate `IsRoleX` boolean flags, not the field name). Do not assume field
   names from general D365 knowledge alone.
-- Credit card fields and other PCI-sensitive data should not be migrated as-is.
+- Credit card fields and other PCI-sensitive data should not be migrated as-is. Enforced in
+  the matcher: any source field containing both `credit` and `card` tokens (e.g.
+  `CreditCardInfoExpirationMonth`, `CreditCardInfoCreditCardNumber`) is blocked from
+  matching any target field at all, regardless of how plausible the target name looks
+  (e.g. `CreditCardInfoExpirationMonth` must never land on a target like `Expiration`).
 - Never copy QuickBooks `Balance` / `OpenBalance` fields directly into D365 — balances
   are derived from the transaction graph, not stored as ground truth. Reconstruct via
   an opening balance journal instead.
