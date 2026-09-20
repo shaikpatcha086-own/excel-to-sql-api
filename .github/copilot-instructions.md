@@ -104,6 +104,10 @@ via a Fabric Lakehouse/Warehouse pipeline.
     context-alias rule), but nothing else.
   - `AddressPostBox` is a distinct address component from `AddressState`/`AddressCity` -
     a `State`-typed source field must never match a `PostBox`-typed target, or vice versa.
+  - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription` have no real
+    QuickBooks source field, so the matcher always leaves them `NoMap`. The SQL generator
+    must still promote them into the active `UNION` SELECT (not the commented-out NoMap
+    placeholder list) so the per-branch literal override still populates them.
 
 ### Field mapping guards
 
