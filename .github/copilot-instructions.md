@@ -108,6 +108,15 @@ via a Fabric Lakehouse/Warehouse pipeline.
     QuickBooks source field, so the matcher always leaves them `NoMap`. The SQL generator
     must still promote them into the active `UNION` SELECT (not the commented-out NoMap
     placeholder list) so the per-branch literal override still populates them.
+  - QuickBooks has a THIRD address block on this table, `ShipToAddress*` (additional named
+    ship-to addresses, e.g. `ShipToAddressCountry`, `ShipToAddressDefaultShipTo`) - distinct
+    from the `BillAddress*`/`ShipAddress*` pair and with no `BillToAddress*` sibling at all.
+    Never derive a `BillToAddress*` counterpart from it.
+  - Every column referenced against `bhs_quickbooks.CustomerShipToAddress` - including ones
+    derived by the Bill/Ship prefix swap - must be validated against the confirmed real
+    column list before the script is finalized. Generation must fail loudly (raise an
+    error) on an unrecognized column instead of letting it reach the generated SQL and only
+    fail when executed.
 
 ### Field mapping guards
 
