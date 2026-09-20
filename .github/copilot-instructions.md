@@ -117,6 +117,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
     column list before the script is finalized. Generation must fail loudly (raise an
     error) on an unrecognized column instead of letting it reach the generated SQL and only
     fail when executed.
+  - The outer `combined` SELECT must explicitly `CAST` every column to its intended type
+    (`,CAST([combined].[Field] AS <type>) AS [Field]`), not a bare `[combined].[Field]`
+    pass-through. Fabric Warehouse's `UNION ALL` type inference can otherwise widen a
+    literal `CAST(... AS varchar(n))` column (e.g. `AddressDescription`'s `'Bill-To'`/
+    `'Ship-To'`) to an unsupported `nvarchar(n)` on `SELECT INTO`.
 
 ### Field mapping guards
 
