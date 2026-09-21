@@ -69,9 +69,12 @@ via a Fabric Lakehouse/Warehouse pipeline.
 ### Active-customer filter
 
 - For the Customer entity only, filter to active customers: add `IsActive = 1` on the base
-  Customer table and on every joined table in that entity's `LedX` view. Do not apply this
-  filter to non-Customer entities (including `CustomerShipToAddress`, whose rows are not
-  filtered by `IsActive`).
+  Customer table ONLY - not on any joined reference/dimension table (Currency, Terms,
+  PaymentMethod, SalesTaxCode, etc.). Those are `LEFT JOIN`ed lookups: they either have no
+  `IsActive` column at all, or a `NULL` from an unmatched `LEFT JOIN` would make the `AND`'d
+  condition drop an otherwise-valid active customer row from `adm.ExtractCustomers`
+  entirely. Do not apply this filter to non-Customer entities (including
+  `CustomerShipToAddress`, whose rows are not filtered by `IsActive`).
 
 ### Sub-entity: CustomerShipToAddress -> CustomerPostalAddress (special case)
 
