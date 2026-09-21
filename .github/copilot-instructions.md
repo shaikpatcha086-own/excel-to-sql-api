@@ -135,6 +135,16 @@ via a Fabric Lakehouse/Warehouse pipeline.
   `SalesTaxCodeRefFullName`) to D365 boolean or enum sales-tax inclusion fields (for
   example, `IsSalesTaxIncludedInPrice`). Tax-code references and Yes/No flags are distinct.
 
+### Customers V3 static-only fields
+
+- The following `CustCustomerV3Entity` target fields are always populated as static/
+  constant values, never mapped from real QuickBooks source data - the matcher blocks any
+  source from matching them:
+  - `PartyType` -> static value `Organization`.
+  - `COMPANY` -> static value equal to the target D365 legal entity code (confirm the exact
+    code for the deployment before generating; it is not a fixed literal across environments).
+  - `LanguageId` -> static value `en-us`.
+
 ## Entity: Vendor
 
 - No vendor-specific mapping rules recorded yet beyond the Global rules above.
