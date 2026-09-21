@@ -138,12 +138,18 @@ via a Fabric Lakehouse/Warehouse pipeline.
 ### Customers V3 static-only fields
 
 - The following `CustCustomerV3Entity` target fields are always populated as static/
-  constant values, never mapped from real QuickBooks source data - the matcher blocks any
-  source from matching them:
-  - `PartyType` -> static value `Organization`.
-  - `COMPANY` -> static value equal to the target D365 legal entity code (confirm the exact
-    code for the deployment before generating; it is not a fixed literal across environments).
-  - `LanguageId` -> static value `en-us`.
+  constant values, never mapped from real QuickBooks source data. The matcher auto-resolves
+  them directly to a `Static Value` result (`source_entity = "Static"`, `source_field` = the
+  literal) instead of searching for or being assigned a real source column:
+  - `PartyType` -> static value `Organization` (status `Auto Accept`).
+  - `LanguageId` -> static value `en-us` (status `Auto Accept`).
+  - `COMPANY` -> resolves to a placeholder literal `<CONFIRM_LEGAL_ENTITY_CODE>` with status
+    `Review` - it depends on the target D365 legal entity and is not a fixed literal across
+    environments, so it must be manually confirmed/replaced with the real code before
+    executing the generated SQL, never left as the placeholder.
+  - This relies on the existing SQL-generation static-value convention: `Mapping Source` /
+    `Table` = `Static`, `Source Field` = the literal - `generate_sql()` emits it as
+    `CAST('<literal>' AS <type>)` rather than a column reference.
 
 ## Entity: Vendor
 
