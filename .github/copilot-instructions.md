@@ -118,7 +118,10 @@ via a Fabric Lakehouse/Warehouse pipeline.
   - QuickBooks has a THIRD address block on this table, `ShipToAddress*` (additional named
     ship-to addresses, e.g. `ShipToAddressCountry`, `ShipToAddressDefaultShipTo`) - distinct
     from the `BillAddress*`/`ShipAddress*` pair and with no `BillToAddress*` sibling at all.
-    Never derive a `BillToAddress*` counterpart from it.
+    Never derive a `BillToAddress*` counterpart from it. It must also never outcompete
+    `BillAddress*`/`ShipAddress*` for a generic `Address*` target (e.g. `ShipToAddressCountry`
+    must not beat `BillAddressCountry` for `AddressCountryRegionId`) - the matcher blocks any
+    `ShipToAddress*` field from matching a generic `Address*` target entirely.
   - Every column referenced against `bhs_quickbooks.CustomerShipToAddress` - including ones
     derived by the Bill/Ship prefix swap - must be validated against the confirmed real
     column list before the script is finalized. Generation must fail loudly (raise an
