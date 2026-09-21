@@ -129,6 +129,10 @@ via a Fabric Lakehouse/Warehouse pipeline.
     pass-through. Fabric Warehouse's `UNION ALL` type inference can otherwise widen a
     literal `CAST(... AS varchar(n))` column (e.g. `AddressDescription`'s `'Bill-To'`/
     `'Ship-To'`) to an unsupported `nvarchar(n)` on `SELECT INTO`.
+  - The type-extraction used for that outer re-CAST must tolerate a space before the size
+    (e.g. a real ADM template Data Type value like `nvarchar (60)`) - a strict
+    no-space-allowed pattern fails to match entirely and must never silently fall back to
+    `nvarchar(60)` (unsupported); the safe fallback is `varchar(60)`.
 
 ### Field mapping guards
 
