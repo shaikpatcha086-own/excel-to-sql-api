@@ -161,6 +161,22 @@ via a Fabric Lakehouse/Warehouse pipeline.
     `Table` = `Static`, `Source Field` = the literal - `generate_sql()` emits it as
     `CAST('<literal>' AS <type>)` rather than a column reference.
 
+### Sub-entity: CustomerContacts -> smmContactPersonV2Entity
+
+- QuickBooks `CustomerContacts` has multiple rows per customer (one per legacy contact
+  person). `smmContactPersonV2Entity` needs exactly one contact per customer, so the
+  `LedX` view wraps the base table in a dedup subquery instead of a normal 1:1 SELECT:
+  - Dedupe via `ROW_NUMBER() OVER (PARTITION BY [ListID] ORDER BY [TimeModified] DESC)`,
+    keeping the most recently changed row, filtered to `WHERE [ContactRowNum] = 1`.
+  - Only include rows that actually have a contact record:
+    `WHERE [ContactsRetListID] IS NOT NULL` inside the dedup subquery.
+  - Legacy contact fields on this table use the `ContactsRet*` prefix (e.g.
+    `ContactsRetFirstName`, `ContactsRetMiddleName`, `ContactsRetLastName`).
+  - The `IsActive` Customer-entity filter does not apply to `CustomerContacts`.
+  - The `[ID]` column orders by `[ListID]`, same as other QuickBooks list/master tables.
+  - No UNION split is needed here (unlike `CustomerShipToAddress`) - there is only one
+    contact role per customer, not a billing/shipping pair.
+
 ## Entity: Vendor
 
 - No vendor-specific mapping rules recorded yet beyond the Global rules above.
