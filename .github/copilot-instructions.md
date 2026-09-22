@@ -157,6 +157,10 @@ via a Fabric Lakehouse/Warehouse pipeline.
     `Review` - it depends on the target D365 legal entity and is not a fixed literal across
     environments, so it must be manually confirmed/replaced with the real code before
     executing the generated SQL, never left as the placeholder.
+  - `CustomerAccountNumber` -> resolves to a placeholder literal `<D365_AUTO_NUMBER_SEQUENCE>`
+    with status `Review` - D365 generates this account ID itself via its own number
+    sequence at record creation; it is a different identifier from the legacy QuickBooks
+    `AccountNumber` and must never be populated from it.
   - This relies on the existing SQL-generation static-value convention: `Mapping Source` /
     `Table` = `Static`, `Source Field` = the literal - `generate_sql()` emits it as
     `CAST('<literal>' AS <type>)` rather than a column reference.
