@@ -179,7 +179,16 @@ via a Fabric Lakehouse/Warehouse pipeline.
 
 ## Entity: Vendor
 
-- No vendor-specific mapping rules recorded yet beyond the Global rules above.
+### Sub-entity: VendVendorV2Entity field mapping guards
+
+- QuickBooks `Tax1099BoxId` (a reference to a 1099 box category, e.g. `"3"` - not a
+  boolean) is the deterministic source for D365 `IsVendorEligibleFor1099`: a vendor with a
+  `Tax1099BoxId` assigned IS 1099-eligible, regardless of which box number it is.
+  - The matcher matches this pair deterministically (a plain token-overlap match fails:
+    digit boundaries prevent `tokenize()` from splitting "1099" out on its own, e.g.
+    `Tax1099BoxId` -> `["tax1099box","id"]`, `IsVendorEligibleFor1099` -> `[...,"for1099"]`).
+  - Never cast `Tax1099BoxId` straight to `bit` - it is an ID/reference value, not 0/1. The
+    `LedX` view must derive it: `CASE WHEN Tax1099BoxId IS NOT NULL THEN 1 ELSE 0 END`.
 
 ## Entity: Item
 
