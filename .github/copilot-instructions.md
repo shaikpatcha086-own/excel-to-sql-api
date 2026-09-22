@@ -205,6 +205,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
     contested-field resolution (`preassign_context_aliases`) must not mark that source
     field as "used" when it resolves the derived-flag target, or the literal
     `Tax1099BoxId` target would be starved and left NoMap.
+  - If the Vendor Fabric table has its OWN legacy `IsReportingTax1099` column (a real,
+    exact-name field, separate from `Tax1099BoxId`), that direct exact-name match always
+    wins over deriving the flag from `Tax1099BoxId` - `preassign_context_aliases` skips
+    the derived-heuristic candidate for a target whenever an unused exact-name source
+    column exists for it.
 
 ## Entity: Item
 
