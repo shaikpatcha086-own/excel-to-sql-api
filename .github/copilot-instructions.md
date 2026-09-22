@@ -189,13 +189,22 @@ via a Fabric Lakehouse/Warehouse pipeline.
 ### Sub-entity: VendVendorV2Entity field mapping guards
 
 - QuickBooks `Tax1099BoxId` (a reference to a 1099 box category, e.g. `"3"` - not a
-  boolean) is the deterministic source for D365 `IsVendorEligibleFor1099`: a vendor with a
-  `Tax1099BoxId` assigned IS 1099-eligible, regardless of which box number it is.
+  boolean) is the deterministic source for the D365 1099-eligibility flag (the real
+  target field is `IsReportingTax1099`; `IsVendorEligibleFor1099` is also recognized in
+  case a template names it that way): a vendor with a `Tax1099BoxId` assigned IS
+  1099-eligible, regardless of which box number it is.
   - The matcher matches this pair deterministically (a plain token-overlap match fails:
     digit boundaries prevent `tokenize()` from splitting "1099" out on its own, e.g.
-    `Tax1099BoxId` -> `["tax1099box","id"]`, `IsVendorEligibleFor1099` -> `[...,"for1099"]`).
+    `Tax1099BoxId` -> `["tax1099box","id"]`). The target-side check keys off the tokens
+    "reporting" or "eligible" combined with "1099" in the normalized field name.
   - Never cast `Tax1099BoxId` straight to `bit` - it is an ID/reference value, not 0/1. The
     `LedX` view must derive it: `CASE WHEN Tax1099BoxId IS NOT NULL THEN 1 ELSE 0 END`.
+  - The vendor template ALSO has its own literal `Tax1099BoxId` target field (the raw
+    value, mapped directly) alongside the derived eligibility flag - both legitimately
+    share the same single QuickBooks `Tax1099BoxId` source column. The matcher's
+    contested-field resolution (`preassign_context_aliases`) must not mark that source
+    field as "used" when it resolves the derived-flag target, or the literal
+    `Tax1099BoxId` target would be starved and left NoMap.
 
 ## Entity: Item
 
