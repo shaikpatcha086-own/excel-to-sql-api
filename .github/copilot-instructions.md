@@ -172,6 +172,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
     `WHERE [ContactsRetListID] IS NOT NULL` inside the dedup subquery.
   - Legacy contact fields on this table use the `ContactsRet*` prefix (e.g.
     `ContactsRetFirstName`, `ContactsRetMiddleName`, `ContactsRetLastName`).
+  - This Fabric table also exposes plain, same-named columns (e.g. a bare `FirstName`)
+    that are NOT the contact record. The matcher blocks these bare columns from matching
+    contact-detail targets (FirstName/MiddleName/LastName/JobTitle/Salutation/Phone/
+    Email/Fax/Mobile/Suffix/Title) so the `ContactsRet*` field always wins instead of the
+    exact-name match outscoring it.
   - The `IsActive` Customer-entity filter does not apply to `CustomerContacts`.
   - The `[ID]` column orders by `[ListID]`, same as other QuickBooks list/master tables.
   - No UNION split is needed here (unlike `CustomerShipToAddress`) - there is only one
