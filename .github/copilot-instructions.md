@@ -124,6 +124,13 @@ via a Fabric Lakehouse/Warehouse pipeline.
     context-alias rule), but nothing else.
   - `AddressPostBox` is a distinct address component from `AddressState`/`AddressCity` -
     a `State`-typed source field must never match a `PostBox`-typed target, or vice versa.
+  - Confirmed client-specific data quirk: `BillAddressCounty`/`ShipAddressCounty` actually
+    carry the country ISO code in this QuickBooks export, not a US county name. They must
+    map to `AddressCountryRegionISOCode` (not `AddressCountyId`) - a dedicated context-alias
+    rule routes them there and blocks them from ever matching `AddressCountyId`. Note:
+    `violates_business_rule()` normally flags "county" vs "country" as a component mismatch,
+    so this override only fires when `preassign_context_aliases()` has run first (its
+    candidate search bypasses that generic rule, same as other context-alias overrides).
   - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription`/`AddressLocationId`
     have no real QuickBooks source field, so the matcher always leaves them `NoMap`. The
     SQL generator must still promote them into the active `UNION` SELECT (not the
