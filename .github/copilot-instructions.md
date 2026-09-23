@@ -10,7 +10,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
 - `trf.<Entity>LedToSt` (procedure) — materializes the LedX view into a `trf.<Entity>St`
   staging table (a stable snapshot).
 - `trf.<Entity>StUp` (procedure) — business rules: cleansing, deduplication, derived
-  fields, lookups/crosswalks, exception handling.
+  fields, lookups/crosswalks, exception handling. This is CLIENT-OWNED: it is only ever
+  `CREATE`d the first time (`IF NOT EXISTS ... EXEC('CREATE PROCEDURE ...')`), never
+  `CREATE OR ALTER` - the client adds their own custom logic directly into this
+  procedure in the database after go-live, and every later regeneration of the script
+  must leave it untouched so that logic survives and keeps running via `MainRun`.
 - `trf.<Entity>StToAdm` (procedure) — promotes the cleaned staging data into the final
   `adm.Extract<Entity>` table (load-ready).
 - `trf.<Entity>MainRun` (procedure) — runs LedToSt -> StUp -> StToAdm in sequence.
