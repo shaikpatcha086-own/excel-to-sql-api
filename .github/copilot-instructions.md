@@ -96,9 +96,13 @@ via a Fabric Lakehouse/Warehouse pipeline.
   - If the target template defines `IsRoleInvoice`/`IsRoleDelivery` fields, set them to
     literal `1`/`0` per branch (billing = Invoice, shipping = Delivery).
   - If it defines `AddressDescription`, set it to literal `'Bill-To'`/`'Ship-To'`.
-  - If it defines `IsPrimary`, set billing to `1` and preserve any mapped shipping
-    default-address flag (wrapped as `CASE WHEN <flag> = 1 THEN 1 ELSE 0 END`), else
-    default shipping to `0`.
+  - If it defines `IsPrimary`, set billing to `1`. The shipping branch defaults to literal
+    `0` - the `ShipToAddressDefaultShipTo` "default ship-to" flag is not reliable enough to
+    drive it, so its derivation (`CASE WHEN <flag> = 1 THEN 1 ELSE 0 END`) is kept only as a
+    commented-out reference line above the active `0` literal, never executed.
+  - If it defines `AddressLocationId`, it has no real QuickBooks source - generate a unique
+    sequential value with `ROW_NUMBER() OVER (ORDER BY [combined].[LegacyListId])` in the
+    outer SELECT (same ordering as `[ID]`), instead of leaving it `NULL`/NoMap.
   - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription` are the assumed D365
     field names for this pattern - confirm the exact names against the actual
     `CustomerPostalAddressStaging` export before relying on them.
@@ -111,10 +115,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
     context-alias rule), but nothing else.
   - `AddressPostBox` is a distinct address component from `AddressState`/`AddressCity` -
     a `State`-typed source field must never match a `PostBox`-typed target, or vice versa.
-  - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription` have no real
-    QuickBooks source field, so the matcher always leaves them `NoMap`. The SQL generator
-    must still promote them into the active `UNION` SELECT (not the commented-out NoMap
-    placeholder list) so the per-branch literal override still populates them.
+  - `IsRoleInvoice`/`IsRoleDelivery`/`IsPrimary`/`AddressDescription`/`AddressLocationId`
+    have no real QuickBooks source field, so the matcher always leaves them `NoMap`. The
+    SQL generator must still promote them into the active `UNION` SELECT (not the
+    commented-out NoMap placeholder list) so the per-branch literal/sequence override
+    still populates them.
   - QuickBooks has a THIRD address block on this table, `ShipToAddress*` (additional named
     ship-to addresses, e.g. `ShipToAddressCountry`, `ShipToAddressDefaultShipTo`) - distinct
     from the `BillAddress*`/`ShipAddress*` pair and with no `BillToAddress*` sibling at all.
