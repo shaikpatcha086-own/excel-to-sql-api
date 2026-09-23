@@ -75,6 +75,11 @@ via a Fabric Lakehouse/Warehouse pipeline.
   condition drop an otherwise-valid active customer row from `adm.ExtractCustomers`
   entirely. Do not apply this filter to non-Customer entities (including
   `CustomerShipToAddress`, whose rows are not filtered by `IsActive`).
+- Because `IsActive` is already consumed directly in that `WHERE` clause, the Fabric mapper
+  UI (app.py) excludes it from the "Leftover Fabric Columns" / unmapped-columns report for
+  the same entity scope (base Customer table, not `CustomerShipToAddress`/
+  `CustomerContacts`) - it is not truly unmapped/ignored, so flagging it for customer
+  review would be misleading.
 
 ### Sub-entity: CustomerShipToAddress -> CustomerPostalAddress (special case)
 
