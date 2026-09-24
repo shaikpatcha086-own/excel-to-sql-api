@@ -235,6 +235,12 @@ via a Fabric Lakehouse/Warehouse pipeline.
     wins over deriving the flag from `Tax1099BoxId` - `preassign_context_aliases` skips
     the derived-heuristic candidate for a target whenever an unused exact-name source
     column exists for it.
+  - Confirmed client-specific case: this Fabric Vendor export also has its own computed
+    `IsVendorEligibleFor1099` boolean column (not exactly named like the target, but the
+    same concept) - it maps directly to `IsReportingTax1099`/`IsVendorEligibleFor1099`
+    with a plain `CAST`, no derivation (unlike `Tax1099BoxId`, since the source name has
+    no "box" substring). This pair is exempted from the generic "two different `Is*`
+    booleans never match" guard in `_has_incompatible_field_roles`.
 
 ## Entity: Item
 
