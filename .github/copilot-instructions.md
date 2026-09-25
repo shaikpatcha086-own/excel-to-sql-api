@@ -241,6 +241,10 @@ via a Fabric Lakehouse/Warehouse pipeline.
     with a plain `CAST`, no derivation (unlike `Tax1099BoxId`, since the source name has
     no "box" substring). This pair is exempted from the generic "two different `Is*`
     booleans never match" guard in `_has_incompatible_field_roles`.
+  - Confirmed client-specific case: this same `IsVendorEligibleFor1099` column ALSO feeds
+    the literal `Tax1099BoxId` target in this template - both a plain `CAST`, both
+    resolving from the same single source column without one starving the other
+    (see `_is_shareable_derived_alias`).
 
 ## Entity: Item
 
