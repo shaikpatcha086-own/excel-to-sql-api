@@ -58,6 +58,12 @@ via a Fabric Lakehouse/Warehouse pipeline.
   or `Invoice`). Do not add, rename, or otherwise modify the workbook's `Table`,
   `Mapping Source`, `Dependency Source`, or source-field columns beyond their existing
   mapping roles.
+- If a target row's Source Field is already filled in with a real value (not blank, not
+  `NoMap`) when the mapping run starts, it is preserved as-is and never re-matched or
+  overwritten - this is how a client's manual correction of a prior `NoMap` row (e.g.
+  filling in the legacy column for `VendorKnownAsName`) survives re-running the mapper
+  on that same workbook. The matched source field is also reserved (not reused for a
+  different still-unmapped target). See `mapping_helpers.partition_already_mapped_targets`.
 
 ---
 
